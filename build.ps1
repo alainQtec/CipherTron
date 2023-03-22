@@ -610,23 +610,41 @@ Begin {
         Begin {
             # Enable TLS1.1/TLS1.2 if they're available but disabled (eg. .NET 4.5)
             $security_protocols = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::SystemDefault
-            if ([Net.SecurityProtocolType].GetMember("Tls11").Count -gt 0) {
-                $security_protocols = $security_protocols -bor [Net.SecurityProtocolType]::Tls11
-            }
-            if ([Net.SecurityProtocolType].GetMember("Tls12").Count -gt 0) {
-                $security_protocols = $security_protocols -bor [Net.SecurityProtocolType]::Tls12
-            }
+            if ([Net.SecurityProtocolType].GetMember("Tls11").Count -gt 0) { $security_protocols = $security_protocols -bor [Net.SecurityProtocolType]::Tls11 }
+            if ([Net.SecurityProtocolType].GetMember("Tls12").Count -gt 0) { $security_protocols = $security_protocols -bor [Net.SecurityProtocolType]::Tls12 }
             [Net.ServicePointManager]::SecurityProtocol = $security_protocols
-            $PSModulePaths = [environment]::GetEnvironmentVariable('PSModulePath')
+            $Get_Module_Path = [scriptblock]::Create({
+                    # ie: when [IO.Path]::Combine([environment]::GetEnvironmentVariable('PSModulePath').Split([IO.Path]::PathSeparator)[0], $moduleName) won't cut it!
+                    param([string]$Name, [ValidateSet('CurrentUser', 'Machine')][string]$Scope = 'CurrentUser')
+                    if ((!(Get-Variable -Name IsWindows -ErrorAction Ignore)) -or $IsWindows) {
+                        try {
+                            $documents_path = [System.Environment]::GetFolderPath('MyDocuments')
+                        } catch {
+                            $documents_path = Join-Path -Path $env:USERPROFILE -ChildPath 'Documents'
+                        }
+                        #Is module Folder desktop or core?
+                        $module_folder = if ($PSVersionTable.ContainsKey('PSEdition') -and $PSVersionTable.PSEdition -eq 'Core') { 'PowerShell' } else { 'WindowsPowerShell' }
+                        $allUsers_path = Join-Path -Path $env:ProgramFiles -ChildPath $module_folder
+                        $curr_UserPath = Join-Path -Path $documents_path -ChildPath $module_folder
+                    } else {
+                        $allUsers_path = Split-Path -Path ([System.Management.Automation.Platform]::SelectProductNameForDirectory('SHARED_MODULES')) -Parent
+                        $curr_UserPath = Split-Path -Path ([System.Management.Automation.Platform]::SelectProductNameForDirectory('USER_MODULES')) -Parent
+                    }
+                    if ($Scope -eq 'Machine') {
+                        return [IO.Path]::Combine($allUsers_path, 'Modules', $Name)
+                    } else {
+                        return [IO.Path]::Combine($curr_UserPath, 'Modules', $Name)
+                    }
+                }
+            )
         }
         Process {
-            if ($null -eq $PSModulePaths) { throw 'Unable To find ModulePaths' }
+            $Module_Path = $Get_Module_Path.Invoke($moduleName)
+            if ([string]::IsNullOrWhiteSpace($Module_Path)) { throw 'Unable To find Module_Path' }
             $version_filter = if ($Version -eq 'latest') { 'IsLatestVersion' } else { "Version eq '$Version'" }
-            $url = "https://www.powershellgallery.com/api/v2/Packages?`$filter=Id eq '$Name' and $version_filter"
-            $response = [string]::Empty; $url = "https://www.powershellgallery.com/api/v2/packages/$moduleName"
-            $req = [System.Net.WebRequest]::Create($url); $req.Method = "GET"; $req.ContentLength = 0
+            $response = [string]::Empty; $url = "https://www.powershellgallery.com/api/v2/Packages?`$filter=Id eq '$moduleName' and $version_filter"
             try {
-                $response = [System.IO.StreamReader]::new($req.GetResponse().GetResponseStream()).ReadToEnd()
+                $response = Invoke-RestMethod -Uri $url -Method Get -Verbose:$false
             } catch {
                 $PSCmdlet.ThrowTerminatingError(
                     [System.Management.Automation.ErrorRecord]::new(
@@ -645,17 +663,25 @@ Begin {
                     )
                 )
             }
-            $downloadUrl = $response.Content.src
+            $downloadUrl = $response.content.src
             Write-Verbose "Installing $moduleName ... $(
-                Invoke-WebRequest -Uri $downloadUrl -OutFile "$moduleName.nupkg" -Verbose:$false
-                $Module_Path = [IO.Path]::Combine($PSModulePaths.Split([IO.Path]::PathSeparator)[0], $moduleName)
                 if (![IO.Path]::Exists($Module_Path)) {
-                    [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = $Module_Path
+                    [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = [System.IO.DirectoryInfo]::New($Module_Path)
                     $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
                     [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create() }
                 }
-                Expand-Archive "$moduleName.nupkg" -DestinationPath $Module_Path -Verbose:$false
-                Remove-Item "$moduleName.nupkg" -Force -ErrorAction SilentlyContinue
+                $ModuleNupkg = [IO.Path]::Combine($Module_Path, "$moduleName.nupkg")
+                Invoke-WebRequest -Uri $downloadUrl -OutFile $ModuleNupkg -Verbose:$false; Unblock-File -Path $ModuleNupkg
+                Expand-Archive $ModuleNupkg -DestinationPath $Module_Path -Verbose:$false -Force
+                # CleanUp
+                @('_rels', 'package', "[Content_Types].xml", $ModuleNupkg, "$($moduleName.Tolower()).nuspec" ) | ForEach-Object {
+                    $Item = [IO.FileInfo]::new([IO.Path]::Combine($Module_Path, $_))
+                    if ($Item.Attributes -eq [System.IO.FileAttributes]::Directory) {
+                        Remove-Item $Item.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                    } else {
+                        Remove-Item $Item.FullName -Force -ErrorAction SilentlyContinue
+                    }
+                }
             ) Done."
         }
     }
