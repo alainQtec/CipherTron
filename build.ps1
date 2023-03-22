@@ -591,6 +591,74 @@ Begin {
             Write-Warning $_.Exception.Message
         }
     }
+    function Install-PsGalleryModule {
+        # .SYNOPSIS
+        # Installs a PowerShell module even on systems that don't have a working PowerShellGet.
+        # .DESCRIPTION
+        # For some reason Install-Module fails on Arch. This is a manual workaround to narrow down the sourse of errors.
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory = $true)]
+            [ValidateScript({ $_ -match '^[a-zA-Z0-9_.-]+$' })]
+            [Alias('Name', 'n')]
+            [string]$moduleName,
+
+            [Parameter(Mandatory = $false)]
+            [ValidateScript({ ($_ -as 'version') -is [version] -or $_ -eq 'latest' })]
+            [string]$Version = 'latest'
+        )
+        Begin {
+            # Enable TLS1.1/TLS1.2 if they're available but disabled (eg. .NET 4.5)
+            $security_protocols = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::SystemDefault
+            if ([Net.SecurityProtocolType].GetMember("Tls11").Count -gt 0) {
+                $security_protocols = $security_protocols -bor [Net.SecurityProtocolType]::Tls11
+            }
+            if ([Net.SecurityProtocolType].GetMember("Tls12").Count -gt 0) {
+                $security_protocols = $security_protocols -bor [Net.SecurityProtocolType]::Tls12
+            }
+            [Net.ServicePointManager]::SecurityProtocol = $security_protocols
+            $PSModulePaths = [environment]::GetEnvironmentVariable('PSModulePath')
+        }
+        Process {
+            if ($null -eq $PSModulePaths) { throw 'Unable To find ModulePaths' }
+            $version_filter = if ($Version -eq 'latest') { 'IsLatestVersion' } else { "Version eq '$Version'" }
+            $url = "https://www.powershellgallery.com/api/v2/Packages?`$filter=Id eq '$Name' and $version_filter"
+            $response = [string]::Empty; $url = "https://www.powershellgallery.com/api/v2/packages/$moduleName"
+            $req = [System.Net.WebRequest]::Create($url); $req.Method = "GET"; $req.ContentLength = 0
+            try {
+                $response = [System.IO.StreamReader]::new($req.GetResponse().GetResponseStream()).ReadToEnd()
+            } catch {
+                $PSCmdlet.ThrowTerminatingError(
+                    [System.Management.Automation.ErrorRecord]::new(
+                        [System.InvalidOperationException]::new("Failed to find PowerShell Gallery release for '$Name' at version '$Version': $($_.Exception.Message)"), 'RestMethod_Failed',
+                        [System.Management.Automation.ErrorCategory]::OperationStopped,
+                        $url
+                    )
+                )
+            }
+            if ($null -eq $response) {
+                $PSCmdlet.ThrowTerminatingError(
+                    [System.Management.Automation.ErrorRecord]::new(
+                        [System.InvalidOperationException]::new("Module not found in PSGallery repository."), 'Module_Not_Found',
+                        [System.Management.Automation.ErrorCategory]::InvalidResult,
+                        $moduleName
+                    )
+                )
+            }
+            $downloadUrl = $response.Content.src
+            Write-Verbose "Installing $moduleName ... $(
+                Invoke-WebRequest -Uri $downloadUrl -OutFile "$moduleName.nupkg" -Verbose:$false
+                $Module_Path = [IO.Path]::Combine($PSModulePaths.Split([IO.Path]::PathSeparator)[0], $moduleName)
+                if (![IO.Path]::Exists($Module_Path)) {
+                    [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = $Module_Path
+                    $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
+                    [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create() }
+                }
+                Expand-Archive "$moduleName.nupkg" -DestinationPath $Module_Path -Verbose:$false
+                Remove-Item "$moduleName.nupkg" -Force -ErrorAction SilentlyContinue
+            ) Done."
+        }
+    }
     function Resolve-Module {
         [Cmdletbinding()]
         param (
@@ -647,7 +715,7 @@ Begin {
                     }
                 } else {
                     Write-Verbose -Message "[$($moduleName)] missing. Installing..."
-                    Install-Module -Name $moduleName -Repository PSGallery
+                    Install-PsGalleryModule -Name $moduleName
                     $versionToImport = (Get-Module -Name $moduleName -ListAvailable | Measure-Object -Property Version -Maximum).Maximum
                 }
 
