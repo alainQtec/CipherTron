@@ -605,7 +605,9 @@ Begin {
 
             [Parameter(Mandatory = $false)]
             [ValidateScript({ ($_ -as 'version') -is [version] -or $_ -eq 'latest' })]
-            [string]$Version = 'latest'
+            [string]$Version = 'latest',
+
+            [switch]$Passthru
         )
         Begin {
             # Enable TLS1.1/TLS1.2 if they're available but disabled (eg. .NET 4.5)
@@ -613,10 +615,11 @@ Begin {
             if ([Net.SecurityProtocolType].GetMember("Tls11").Count -gt 0) { $security_protocols = $security_protocols -bor [Net.SecurityProtocolType]::Tls11 }
             if ([Net.SecurityProtocolType].GetMember("Tls12").Count -gt 0) { $security_protocols = $security_protocols -bor [Net.SecurityProtocolType]::Tls12 }
             [Net.ServicePointManager]::SecurityProtocol = $security_protocols
+            $Is_Windows_OS = !(Get-Variable -Name IsWindows -ErrorAction Ignore) -or $IsWindows
             $Get_Module_Path = [scriptblock]::Create({
                     # ie: when [IO.Path]::Combine([environment]::GetEnvironmentVariable('PSModulePath').Split([IO.Path]::PathSeparator)[0], $moduleName) won't cut it!
                     param([string]$Name, [ValidateSet('CurrentUser', 'Machine')][string]$Scope = 'CurrentUser')
-                    if ((!(Get-Variable -Name IsWindows -ErrorAction Ignore)) -or $IsWindows) {
+                    if ($Is_Windows_OS) {
                         try {
                             $documents_path = [System.Environment]::GetFolderPath('MyDocuments')
                         } catch {
@@ -664,25 +667,30 @@ Begin {
                 )
             }
             $downloadUrl = $response.content.src
-            Write-Verbose "Installing $moduleName ... $(
-                if (![IO.Path]::Exists($Module_Path)) {
-                    [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = [System.IO.DirectoryInfo]::New($Module_Path)
-                    $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
-                    [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create() }
+            Write-Host "Installing $moduleName ... " -NoNewline -ForegroundColor DarkCyan
+            if (![IO.Path]::Exists($Module_Path)) {
+                [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = [System.IO.DirectoryInfo]::New($Module_Path)
+                $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
+                [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create() }
+            }
+            $ModuleNupkg = [IO.Path]::Combine($Module_Path, "$moduleName.nupkg")
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $ModuleNupkg -Verbose:$false;
+            if ($Is_Windows_OS) { Unblock-File -Path $ModuleNupkg }
+            Expand-Archive $ModuleNupkg -DestinationPath $Module_Path -Verbose:$false -Force
+            # CleanUp
+            @('_rels', 'package', "[Content_Types].xml", $ModuleNupkg, "$($moduleName.Tolower()).nuspec" ) | ForEach-Object {
+                $Item = [IO.FileInfo]::new([IO.Path]::Combine($Module_Path, $_))
+                if ($Item.Attributes -eq [System.IO.FileAttributes]::Directory) {
+                    Remove-Item $Item.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                } else {
+                    Remove-Item $Item.FullName -Force -ErrorAction SilentlyContinue
                 }
-                $ModuleNupkg = [IO.Path]::Combine($Module_Path, "$moduleName.nupkg")
-                Invoke-WebRequest -Uri $downloadUrl -OutFile $ModuleNupkg -Verbose:$false; Unblock-File -Path $ModuleNupkg
-                Expand-Archive $ModuleNupkg -DestinationPath $Module_Path -Verbose:$false -Force
-                # CleanUp
-                @('_rels', 'package', "[Content_Types].xml", $ModuleNupkg, "$($moduleName.Tolower()).nuspec" ) | ForEach-Object {
-                    $Item = [IO.FileInfo]::new([IO.Path]::Combine($Module_Path, $_))
-                    if ($Item.Attributes -eq [System.IO.FileAttributes]::Directory) {
-                        Remove-Item $Item.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                    } else {
-                        Remove-Item $Item.FullName -Force -ErrorAction SilentlyContinue
-                    }
-                }
-            ) Done."
+            }
+        }
+
+        end {
+            Write-Host " Done." -ForegroundColor Green
+            if ($Passthru.IsPresent) { Write-Output ([IO.FileInfo]::new([IO.Path]::Combine($Module_Path, "$moduleName.psd1"))) }
         }
     }
     function Resolve-Module {
@@ -709,47 +717,54 @@ Begin {
         }
         process {
             foreach ($moduleName in $Names) {
-                $versionToImport = [string]::Empty
+                $versionToImport = [string]::Empty; $Psd1 = ''
                 Write-Host "##[command] Resolving Module [$moduleName]" -ForegroundColor Magenta
                 $Module = Get-Module -Name $moduleName -ListAvailable -Verbose:$false -ErrorAction SilentlyContinue
                 if ($null -ne $Module) {
                     # Determine latest version on PSGallery and warn us if we're out of date
                     $latestLocalVersion = ($Module | Measure-Object -Property Version -Maximum).Maximum
                     $versionToImport = $latestLocalVersion
-                    try {
-                        $latestGalleryVersion = Get-LatestModuleVersion $moduleName # [todo] should be a retriable command.
-                        if ($null -eq $latestGalleryVersion) {
-                            Write-Warning "Unable to Find Module $moduleName. Check your Internet."
-                        }
-                        if ($null -eq (Get-Module -Name Psake -ListAvailable -ErrorAction SilentlyContinue)) {
-                            Install-Module -Name Psake -Force -Verbose -Scope CurrentUser;
-                        }
-                        # Are we out of date?
-                        if ($latestLocalVersion -lt $latestGalleryVersion) {
+                    $latestGalleryVersion = Get-LatestModuleVersion $moduleName # [todo] should be a retriable command.
+                    if ($null -eq $latestGalleryVersion) {
+                        Write-Warning "Unable to Find Module $moduleName. Check your Internet."
+                    }
+                    if ($null -eq (Get-Module -Name Psake -ListAvailable -ErrorAction SilentlyContinue)) {
+                        Install-Module -Name Psake -Force -Verbose -Scope CurrentUser;
+                    }
+                    # Are we out of date?
+                    if ($latestLocalVersion -lt $latestGalleryVersion) {
+                        if ($UpdateModules) {
+                            Write-Verbose -Message "$($moduleName) installed version [$($latestLocalVersion.ToString())] is outdated. Installing gallery version [$($latestGalleryVersion.ToString())]"
                             if ($UpdateModules) {
-                                Write-Verbose -Message "$($moduleName) installed version [$($latestLocalVersion.ToString())] is outdated. Installing gallery version [$($latestGalleryVersion.ToString())]"
-                                if ($UpdateModules) {
+                                try {
                                     Install-Module -Name $moduleName -RequiredVersion $latestGalleryVersion
-                                    $versionToImport = $latestGalleryVersion
+                                } catch {
+                                    Install-PsGalleryModule -Name $moduleName
                                 }
-                            } else {
-                                Write-Warning "$($moduleName) is out of date. Latest version on PSGallery is [$latestGalleryVersion]. To update, use the -UpdateModules switch."
+                                $versionToImport = $latestGalleryVersion
                             }
+                        } else {
+                            Write-Warning "$($moduleName) is out of date. Latest version on PSGallery is [$latestGalleryVersion]. To update, use the -UpdateModules switch."
                         }
-                    } catch {
-                        $null
                     }
                 } else {
                     Write-Verbose -Message "[$($moduleName)] missing. Installing..."
-                    Install-PsGalleryModule -Name $moduleName
+                    try {
+                        Install-Module -Name $moduleName
+                    } catch {
+                        $Psd1 = Install-PsGalleryModule -Name $moduleName -Passthru
+                    }
                     $versionToImport = (Get-Module -Name $moduleName -ListAvailable | Measure-Object -Property Version -Maximum).Maximum
                 }
-
                 Write-Verbose -Message "$($moduleName) was installed Succesfully. Now Importing..."
-                if (![string]::IsNullOrEmpty($versionToImport)) {
-                    Import-Module $moduleName -RequiredVersion $versionToImport
+                if ($null -eq $Psd1) {
+                    if (![string]::IsNullOrEmpty($versionToImport)) {
+                        Import-Module $moduleName -RequiredVersion $versionToImport
+                    } else {
+                        Import-Module $moduleName
+                    }
                 } else {
-                    Import-Module $moduleName
+                    Import-Module $Psd1.FullName
                 }
             }
         }
