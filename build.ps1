@@ -232,7 +232,7 @@ Begin {
                 $Env:PSModulePath = $origModulePath
             } -description 'Run Pester tests against compiled module'
 
-            Task Deploy -depends Init -description 'Deploy module to PSGallery' -preaction {
+            Task Deploy -depends Test -description 'Deploy module to PSGallery' -preaction {
                 if (($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'BuildSystem')) -eq 'VSTS' -and $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!deploy' -and $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'BranchName')) -eq "main") -or $script:ForceDeploy -eq $true) {
                     if ($null -eq (Get-Module PoshTwit -ListAvailable)) {
                         "    Installing PoshTwit module..."
