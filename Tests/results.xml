@@ -1,0 +1,84 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="6" errors="0" failures="6" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2022-09-09" time="18:44:42">
+  <environment clr-version="4.0.30319.42000" user-domain="CODETRON" cwd="E:\_UserProfile_\Documents\GitHub\CipherTron" platform="Microsoft Windows 11 Pro Insider Preview|C:\Windows|\Device\Harddisk0\Partition1" machine-name="CODETRON" nunit-version="2.5.8.0" os-version="10.0.25151" user="alain" />
+  <culture-info current-culture="en-US" current-uiculture="en-US" />
+  <test-suite type="TestFixture" name="Pester" executed="True" result="Failure" success="False" time="4.3132" asserts="0" description="Pester">
+    <results>
+      <test-suite type="TestFixture" name="E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Integration.Tests.ps1" executed="True" result="Failure" success="False" time="4.2527" asserts="0" description="E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Integration.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="Protect-Data" executed="True" result="Failure" success="False" time="1.7725" asserts="0" description="Protect-Data">
+            <results>
+              <test-case description="should have command" name="Protect-Data.should have command" time="0.7309" asserts="0" success="False" result="Failure" executed="True">
+                <failure>
+                  <message>The term 'Protect-Data' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.</message>
+                  <stack-trace>at &lt;ScriptBlock&gt;, E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Integration.Tests.ps1: line 3
+3:         Get-Command Protect-Data | Should -Not -BeNullOrEmpty
+</stack-trace>
+                </failure>
+              </test-case>
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="UnProtect-Data" executed="True" result="Failure" success="False" time="1.0435" asserts="0" description="UnProtect-Data">
+            <results>
+              <test-case description="should have command" name="UnProtect-Data.should have command" time="0.0616" asserts="0" success="False" result="Failure" executed="True">
+                <failure>
+                  <message>The term 'UnProtect-Data' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.</message>
+                  <stack-trace>at &lt;ScriptBlock&gt;, E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Integration.Tests.ps1: line 9
+9:         Get-Command UnProtect-Data | Should -Not -BeNullOrEmpty
+</stack-trace>
+                </failure>
+              </test-case>
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="Decrypt-Object" executed="True" result="Failure" success="False" time="0.2415" asserts="0" description="Decrypt-Object">
+            <results>
+              <test-case description="should have command" name="Decrypt-Object.should have command" time="0.1075" asserts="0" success="False" result="Failure" executed="True">
+                <failure>
+                  <message>The term 'Decrypt-Object' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.</message>
+                  <stack-trace>at &lt;ScriptBlock&gt;, E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Integration.Tests.ps1: line 15
+15:         Get-Command Decrypt-Object | Should -Not -BeNullOrEmpty
+</stack-trace>
+                </failure>
+              </test-case>
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="Encrypt-Object" executed="True" result="Failure" success="False" time="0.1499" asserts="0" description="Encrypt-Object">
+            <results>
+              <test-case description="should have command" name="Encrypt-Object.should have command" time="0.0529" asserts="0" success="False" result="Failure" executed="True">
+                <failure>
+                  <message>The term 'Encrypt-Object' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.</message>
+                  <stack-trace>at &lt;ScriptBlock&gt;, E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Integration.Tests.ps1: line 21
+21:         Get-Command Encrypt-Object | Should -Not -BeNullOrEmpty
+</stack-trace>
+                </failure>
+              </test-case>
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="New-K3Y" executed="True" result="Failure" success="False" time="0.3336" asserts="0" description="New-K3Y">
+            <results>
+              <test-case description="should have command" name="New-K3Y.should have command" time="0.0563" asserts="0" success="False" result="Failure" executed="True">
+                <failure>
+                  <message>The term 'New-K3Y' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.</message>
+                  <stack-trace>at &lt;ScriptBlock&gt;, E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Integration.Tests.ps1: line 27
+27:         Get-Command New-K3Y | Should -Not -BeNullOrEmpty
+</stack-trace>
+                </failure>
+              </test-case>
+              <test-case description="should work" name="New-K3Y.should work" time="0.1825" asserts="0" success="False" result="Failure" executed="True">
+                <failure>
+                  <message>The term 'New-K3Y' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.</message>
+                  <stack-trace>at &lt;ScriptBlock&gt;, E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Integration.Tests.ps1: line 30
+30:         (New-K3Y -UserName $(whoami) -Password $(
+</stack-trace>
+                </failure>
+              </test-case>
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Unit.Tests.ps1" executed="True" result="Success" success="True" time="0.0605" asserts="0" description="E:\_UserProfile_\Documents\GitHub\CipherTron\tests\Unit.Tests.ps1">
+        <results />
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>
