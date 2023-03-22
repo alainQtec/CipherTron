@@ -37,12 +37,18 @@ param(
 
 Begin {
     #Requires -RunAsAdministrator
-    if ($null -ne ${env:=::}) { Throw 'Please Run this as Administrator' }
+    if ($null -ne ${env:=::}) { Throw 'Please Run this script as Administrator' }
     #region    Variables
     [Environment]::SetEnvironmentVariable('IsAC', $(if (![string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('GITHUB_WORKFLOW'))) { '1' } else { '0' }), [System.EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable('IsCI', $(if (![string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('TF_BUILD'))) { '1' }else { '0' }), [System.EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable('RUN_ID', $(if ([bool][int]$env:IsAC) { [Environment]::GetEnvironmentVariable('GITHUB_RUN_ID') }else { [Guid]::NewGuid().Guid.substring(0, 21).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1))) + '_' }), [System.EnvironmentVariableTarget]::Process);
-    $script:localizedData = Get-LocalizedData -DefaultUICulture 'en-US'
+    $script:localizedData = if ($null -ne (Get-Command Get-LocalizedData -ErrorAction SilentlyContinue)) {
+        Get-LocalizedData -DefaultUICulture 'en-US'
+    } else {
+        $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
+        if (!$dataFile.Exists) { throw [System.IO.FileNotFoundException]::new('Unable to find the LocalizedData file.', 'CipherTron.strings.psd1') }
+        [scriptblock]::Create("$([IO.File]::ReadAllText($dataFile))").Invoke()
+    }
     #region    ScriptBlocks
     $script:PSake_ScriptBlock = [scriptblock]::Create({
             # PSake makes variables declared here available in other scriptblocks
