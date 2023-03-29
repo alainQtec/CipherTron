@@ -22,12 +22,10 @@
         '<FunctionsToExport>'
     ) #For performance, list functions explicitly
     CmdletsToExport        = '*'
-    VariablesToExport      = '*'
+    VariablesToExport      = @()
     AliasesToExport        = '*' #For performance, list alias explicitly
     #DSCResourcesToExport = ''
-    # List of all modules packaged with this module
     ModuleList             = @()
-    # List of all files packaged with this module
     FileList               = @()
     # Private data to pass to the module specified in ModuleToProcess. This may also contain a PSData hashtable with additional module metadata used by PowerShell.
     PrivateData            = @{

@@ -24,7 +24,13 @@ using namespace System.Text
 using namespace System.Security
 using namespace System.Runtime.InteropServices
 
-$script:localizedData = Get-LocalizedData -DefaultUICulture 'en-US'
+$script:localizedData = if ($null -ne (Get-Command Get-LocalizedData -ErrorAction SilentlyContinue)) {
+    Get-LocalizedData -DefaultUICulture 'en-US'
+} else {
+    $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
+    if (!$dataFile.Exists) { throw [System.IO.FileNotFoundException]::new('Unable to find the LocalizedData file.', 'CipherTron.strings.psd1') }
+    [scriptblock]::Create("$([IO.File]::ReadAllText($dataFile))").Invoke()
+}
 #region    Helpers
 
 #region    enums

@@ -42,13 +42,9 @@ Begin {
     [Environment]::SetEnvironmentVariable('IsAC', $(if (![string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('GITHUB_WORKFLOW'))) { '1' } else { '0' }), [System.EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable('IsCI', $(if (![string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('TF_BUILD'))) { '1' }else { '0' }), [System.EnvironmentVariableTarget]::Process)
     [Environment]::SetEnvironmentVariable('RUN_ID', $(if ([bool][int]$env:IsAC) { [Environment]::GetEnvironmentVariable('GITHUB_RUN_ID') }else { [Guid]::NewGuid().Guid.substring(0, 21).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1))) + '_' }), [System.EnvironmentVariableTarget]::Process);
-    $script:localizedData = if ($null -ne (Get-Command Get-LocalizedData -ErrorAction SilentlyContinue)) {
-        Get-LocalizedData -DefaultUICulture 'en-US'
-    } else {
-        $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
-        if (!$dataFile.Exists) { throw [System.IO.FileNotFoundException]::new('Unable to find the LocalizedData file.', 'CipherTron.strings.psd1') }
-        [scriptblock]::Create("$([IO.File]::ReadAllText($dataFile))").Invoke()
-    }
+    $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
+    if (!$dataFile.Exists) { throw [System.IO.FileNotFoundException]::new('Unable to find the LocalizedData file.', 'CipherTron.strings.psd1') }
+    $script:localizedData = [scriptblock]::Create("$([IO.File]::ReadAllText($dataFile))").Invoke()
     #region    ScriptBlocks
     $script:PSake_ScriptBlock = [scriptblock]::Create({
             # PSake makes variables declared here available in other scriptblocks
@@ -122,48 +118,38 @@ Begin {
                 Write-Verbose "Create module Output directory"
                 New-Item -Path $outputModVerDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
                 Write-Verbose "Add Module files ..."
+                $ModuleManifest = [IO.FileInfo]::New([Environment]::GetEnvironmentVariable($env:RUN_ID + 'PSModuleManifest'))
+                if (!$ModuleManifest.Exists) { throw [System.IO.FileNotFoundException]::New('Could Not Create Module Manifest!') }
                 try {
-                    foreach ($Item in @(
-                            "bin"
-                            "en-US"
-                            "Private"
-                            "Public"
-                            "LICENSE"
-                            "$([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName')).psd1"
-                        )
-                    ) {
-                        Copy-Item -Recurse -Path $([IO.Path]::Combine($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'BuildScriptPath')), $Item)) -Destination $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'PSModulePath'))
-                    }
-                    if (![IO.File]::Exists($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'PSModuleManifest')))) {
-                        Throw "Could Not Create Module Manifest!"
-                    }
+                    @(
+                        "bin"
+                        "en-US"
+                        "Private"
+                        "Public"
+                        "LICENSE"
+                        "$([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName')).psd1"
+                    ).ForEach({ Copy-Item -Recurse -Path $([IO.Path]::Combine($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'BuildScriptPath')), $_)) -Destination $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'PSModulePath')) })
                 } catch {
                     throw $_
                 }
-                # Create Class
-                $_NC_File = [IO.Path]::Combine($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'PSModulePath')), "Private", "CipherTron.Core", "CipherTron.Core.psm1")
-                $NC_Class = Get-Item $_NC_File
+                $CorePsm1 = [System.IO.FileInfo]::new([IO.Path]::Combine($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'PSModulePath')), "Private", "CipherTron.Core", "CipherTron.Core.psm1"))
+                if (!$CorePsm1.Exists) { Throw [System.IO.FileNotFoundException]::new('Unable to find the specified file.', "$CorePsm1") }
                 if ($PSVersionTable.PSEdition -ne "Core" -and $PSVersionTable.PSVersion.Major -le 5.1) {
-                    if ([IO.File]::Exists($NC_Class)) {
-                        (Get-Content $NC_Class.FullName).Replace("    ZLib", '') -match '\S' | Out-File $NC_Class
-                    } else {
-                        Throw [System.IO.FileNotFoundException]::new('Unable to find the specified file.', "$_NC_File")
-                    }
+                    (Get-Content $CorePsm1.FullName).Replace("    ZLib", '') -match '\S' | Out-File $CorePsm1
                 }
                 $Psm1Path = [IO.Path]::Combine($outputModVerDir, "$($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName'))).psm1")
-                $psm1 = New-Item -Path $Psm1Path -ItemType File -Force
-                $functionsToExport = @()
-                $publicFunctionsPath = [IO.Path]::Combine($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectPath')), "Public")
+                $PsModuleContent = Get-Content -Path ([IO.Path]::Combine($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectPath')), "$([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName')).psm1" )) -Raw
+                $PsModuleContent = $PsModuleContent.Replace("'<Aliases>'", "'Encrypt', 'Decrypt'")
+                Write-Verbose -Message "Editing $([IO.Path]::GetFileName($Psm1Path)) ..."
+                $PsModuleContent | Add-Content -Path $(New-Item -Path $Psm1Path -ItemType File -Force) -Encoding UTF8
+
+                $functionsToExport = @(); $publicFunctionsPath = [IO.Path]::Combine($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectPath')), "Public")
                 if (Test-Path $publicFunctionsPath -PathType Container -ErrorAction SilentlyContinue) {
                     Get-ChildItem -Path $publicFunctionsPath -Filter "*.ps1" -Recurse -File | ForEach-Object {
                         $functionsToExport += $_.BaseName
                     }
                 }
-                $manifestContent = Get-Content -Path $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'PSModuleManifest')) -Raw
-                $PsModuleContent = Get-Content -Path ([IO.Path]::Combine($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectPath')), "$([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName')).psm1" )) -Raw
-                $PsModuleContent = $PsModuleContent.Replace("'<Aliases>'", "'Encrypt', 'Decrypt'")
-                Write-Verbose -Message "Editing $((Get-Item $Psm1Path).BaseName) ..."
-                $PsModuleContent | Add-Content -Path $psm1 -Encoding UTF8
+                $manifestContent = Get-Content -Path $ModuleManifest -Raw
                 $publicFunctionNames = Get-ChildItem -Path $publicFunctionsPath -Filter "*.ps1" | Select-Object -ExpandProperty BaseName
 
                 Write-Verbose -Message 'Creating psd1 ...'
@@ -177,7 +163,7 @@ Begin {
                 ).Replace(
                     "<Year>", ([Datetime]::Now.Year)
                 )
-                $manifestContent | Set-Content -Path $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'PSModuleManifest'))
+                $manifestContent | Set-Content -Path $ModuleManifest
                 if ((Get-ChildItem $outputModVerDir | Where-Object { $_.Name -eq "$($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName'))).psd1" }).BaseName -cne $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName'))) {
                     "    Renaming manifest to correct casing"
                     Rename-Item (Join-Path $outputModVerDir "$($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName'))).psd1") -NewName "$($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName'))).psd1" -Force
@@ -253,31 +239,44 @@ Begin {
                     }
                     $galVerSplit = $galVer.Split('.')
                     $nextGalVer = [System.Version](($galVerSplit[0..($galVerSplit.Count - 2)] -join '.') + '.' + ([int]$galVerSplit[-1] + 1))
-
-                    $versionToDeploy = if ($commitVer -and ([System.Version]$commitVer -lt $nextGalVer)) {
-                        Write-Host -ForegroundColor Yellow "Version in commit message is $commitVer, which is less than the next Gallery version and would result in an error. Possible duplicate deployment build, skipping module bump and negating deployment"
-                        Set-EnvironmentVariable -name ($env:RUN_ID + 'CommitMessage') -Value $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')).Replace('!deploy', '')
-                        $null
-                    } elseif ($commitVer -and ([System.Version]$commitVer -gt $nextGalVer)) {
-                        Write-Host -ForegroundColor Green "Module version to deploy: $commitVer [from commit message]"
-                        [System.Version]$commitVer
-                    } elseif ($CurrentVersion -ge $nextGalVer) {
-                        Write-Host -ForegroundColor Green "Module version to deploy: $CurrentVersion [from manifest]"
-                        $CurrentVersion
-                    } elseif ($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!hotfix') {
-                        Write-Host -ForegroundColor Green "Module version to deploy: $nextGalVer [commit message match '!hotfix']"
-                        $nextGalVer
-                    } elseif ($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!minor') {
-                        $minorVers = [System.Version]("{0}.{1}.{2}" -f $nextGalVer.Major, ([int]$nextGalVer.Minor + 1), 0)
-                        Write-Host -ForegroundColor Green "Module version to deploy: $minorVers [commit message match '!minor']"
-                        $minorVers
-                    } elseif ($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!major') {
-                        $majorVers = [System.Version]("{0}.{1}.{2}" -f ([int]$nextGalVer.Major + 1), 0, 0)
-                        Write-Host -ForegroundColor Green "Module version to deploy: $majorVers [commit message match '!major']"
-                        $majorVers
-                    } else {
-                        Write-Host -ForegroundColor Green "Module version to deploy: $nextGalVer [PSGallery next version]"
-                        $nextGalVer
+                    $versionToDeploy = switch ($true) {
+                        ($commitVer -and ([System.Version]$commitVer -lt $nextGalVer)) {
+                            Write-Host -ForegroundColor Yellow "Version in commit message is $commitVer, which is less than the next Gallery version and would result in an error. Possible duplicate deployment build, skipping module bump and negating deployment"
+                            Set-EnvironmentVariable -name ($env:RUN_ID + 'CommitMessage') -Value $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')).Replace('!deploy', '')
+                            $null
+                            break
+                        }
+                        ($commitVer -and ([System.Version]$commitVer -gt $nextGalVer)) {
+                            Write-Host -ForegroundColor Green "Module version to deploy: $commitVer [from commit message]"
+                            [System.Version]$commitVer
+                            break
+                        }
+                        ($CurrentVersion -ge $nextGalVer) {
+                            Write-Host -ForegroundColor Green "Module version to deploy: $CurrentVersion [from manifest]"
+                            $CurrentVersion
+                            break
+                        }
+                        ($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!hotfix') {
+                            Write-Host -ForegroundColor Green "Module version to deploy: $nextGalVer [commit message match '!hotfix']"
+                            $nextGalVer
+                            break
+                        }
+                        ($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!minor') {
+                            $minorVers = [System.Version]("{0}.{1}.{2}" -f $nextGalVer.Major, ([int]$nextGalVer.Minor + 1), 0)
+                            Write-Host -ForegroundColor Green "Module version to deploy: $minorVers [commit message match '!minor']"
+                            $minorVers
+                            break
+                        }
+                        ($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!major') {
+                            $majorVers = [System.Version]("{0}.{1}.{2}" -f ([int]$nextGalVer.Major + 1), 0, 0)
+                            Write-Host -ForegroundColor Green "Module version to deploy: $majorVers [commit message match '!major']"
+                            $majorVers
+                            break
+                        }
+                        Default {
+                            Write-Host -ForegroundColor Green "Module version to deploy: $nextGalVer [PSGallery next version]"
+                            $nextGalVer
+                        }
                     }
                     # Bump the module version
                     if ($versionToDeploy) {
@@ -308,7 +307,6 @@ Begin {
                             }
                             $commitId = git rev-parse --verify HEAD
                             if (![string]::IsNullOrWhiteSpace($Env:GitHubPAT) -and [bool][int]$env:IsAC) {
-                                $Project_Name = [Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName')
                                 "    Creating Release ZIP..."
                                 $zipPath = [System.IO.Path]::Combine($PSScriptRoot, "$($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName'))).zip")
                                 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
@@ -317,23 +315,7 @@ Begin {
                                 "    Publishing Release v$($versionToDeploy) @ commit Id [$($commitId)] to GitHub..."
                                 $ReleaseNotes = [Environment]::GetEnvironmentVariable($env:RUN_ID + 'ReleaseNotes')
                                 $ReleaseNotes += (git log -1 --pretty=%B | Select-Object -Skip 2) -join "`n"
-                                $ReleaseNotes += "`n`n***`n`n# Instructions`n`n"
-                                $ReleaseNotes += @"
-1. [Click here](https://github.com/alainQtec/$Project_Name/releases/download/v$($versionToDeploy.ToString())/$Project_Name.zip) to download the *$Project_Name.zip* file attached to the release.
-2. **If on Windows**: Right-click the downloaded zip, select Properties, then unblock the file.
-    > _This is to prevent having to unblock each file individually after unzipping._
-3. Unzip the archive.
-4. (Optional) Place the module folder somewhere in your ``PSModulePath``.
-    > _You can view the paths listed by running the environment variable ```$Env:PSModulePath``_
-5. Import the module, using the full path to the PSD1 file in place of ``$Project_Name`` if the unzipped module folder is not in your ``PSModulePath``:
-    ``````powershell
-    # In `$Env:PSModulePath
-    Import-Module $Project_Name
-
-    # Otherwise, provide the path to the manifest:
-    Import-Module -Path C:\MyPSModules\$Project_Name\$($versionToDeploy.ToString())\$Project_Name.psd1
-    ``````
-"@
+                                $ReleaseNotes += $script:localizedData.ReleaseNotes.Replace('<versionToDeploy>', $versionToDeploy.ToString())
                                 Set-EnvironmentVariable -name ('{0}{1}' -f $env:RUN_ID, 'ReleaseNotes') -Value $ReleaseNotes
                                 $gitHubParams = @{
                                     VersionNumber    = $versionToDeploy.ToString()
@@ -553,7 +535,7 @@ Begin {
             Set-Variable -Name BuildNumber -Value ([Environment]::GetEnvironmentVariable($env:RUN_ID + 'BuildNumber')) -Scope Local -Force
             Set-EnvironmentVariable -Name ('{0}{1}' -f $env:RUN_ID, 'BuildOutput') -Value $([IO.path]::Combine($BuildScriptPath, "BuildOutput"))
             Set-Variable -Name BuildOutput -Value ([Environment]::GetEnvironmentVariable($env:RUN_ID + 'BuildOutput')) -Scope Local -Force
-            Set-EnvironmentVariable -Name ('{0}{1}' -f $env:RUN_ID, 'ProjectName') -Value $("CipherTron")
+            Set-EnvironmentVariable -Name ('{0}{1}' -f $env:RUN_ID, 'ProjectName') -Value $script:localizedData.ModuleName
             Set-Variable -Name ProjectName -Value ([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName')) -Scope Local -Force
             Set-EnvironmentVariable -Name ('{0}{1}' -f $env:RUN_ID, 'PSModulePath') -Value $([IO.path]::Combine($BuildOutput, $ProjectName, $BuildNumber))
             Set-EnvironmentVariable -Name ('{0}{1}' -f $env:RUN_ID, 'PSModuleManifest') -Value $([IO.path]::Combine($BuildOutput, $ProjectName, $BuildNumber, "$ProjectName.psd1"))
