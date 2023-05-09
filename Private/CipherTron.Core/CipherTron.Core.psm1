@@ -24,12 +24,11 @@ using namespace System.Text
 using namespace System.Security
 using namespace System.Runtime.InteropServices
 
-$script:localizedData = if ($null -ne (Get-Command Get-LocalizedData -ErrorAction SilentlyContinue)) {
-    Get-LocalizedData -DefaultUICulture 'en-US'
+$dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
+if ($dataFile.Exists) {
+    $script:localizedData = [scriptblock]::Create("$([IO.File]::ReadAllText($dataFile))").Invoke()
 } else {
-    $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
-    if (!$dataFile.Exists) { throw [System.IO.FileNotFoundException]::new('Unable to find the LocalizedData file.', 'CipherTron.strings.psd1') }
-    [scriptblock]::Create("$([IO.File]::ReadAllText($dataFile))").Invoke()
+    Write-Warning 'FileNotFound: Unable to find the LocalizedData file CipherTron.strings.psd1.'
 }
 #region    Helpers
 
@@ -144,15 +143,6 @@ enum CredentialPersistence {
     Session = 1
     LocalComputer = 2
     Enterprise = 3
-}
-enum OISecretType {
-    Password
-    SecTokken
-}
-
-enum EmailType {
-    Primary
-    Secondary
 }
 #endregion enums
 
@@ -1726,146 +1716,6 @@ class CredentialManager {
         if (Get-Service vaultsvc -ErrorAction SilentlyContinue) { Start-Service vaultsvc -ErrorAction Stop }
     }
 }
-
-#region    OnlineIdentity
-Class OIsecret {
-    [OIsecretType]$type
-    [securestring]$Value
-
-    OIsecret([string]$secret, [string]$type) {
-        $this.type = [OIsecretType]$type
-        $this.Value = [xconvert]::TosecureString($secret)
-    }
-    OIsecret([string]$secret, [OISecretType]$type) {
-        $this.type = $type
-        $this.Value = [xconvert]::TosecureString($secret)
-    }
-    OIsecret([string]$secret) {
-        $this.type = [OIsecretType]::SecTokken
-        $this.Value = [XConvert]::TosecureString($secret)
-    }
-    OIsecret([securestring]$secret) {
-        $this.type = [OIsecretType]::Password
-        $this.Value = $secret
-    }
-}
-class URL {
-    [string]$Name
-    URL ([string]$url) {
-        if ([URL]::IsValid($url)) { $this.Name = $url }
-    }
-    static [bool] IsValid([string]$Name) {
-        return [URL]::IsValid($Name, $true)
-    }
-    static [bool] IsValid([string]$Name, [bool]$throwOnFailure) {
-        $Isvalid = $Name -match '^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$'
-        if (!$Isvalid -and $throwOnFailure) {
-            throw [System.ArgumentException]'Ivalid Url string.'
-        }
-        return $Isvalid
-    }
-}
-class Email {
-    [string]$Name
-    [EmailType]$type
-    Email ([string]$email) {
-        if ([Email]::IsValid($email)) { $this.Name = $email }
-        $this.type = [EmailType]::Primary
-    }
-    static [bool] IsValid([string]$Email) {
-        return [Email]::IsValid($Email, $true)
-    }
-    static [bool] IsValid([string]$Email, [bool]$throwOnFailure) {
-        $Isvalid = $Email -match '^[a-zA-Z0-9.!#$%&''*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
-        if (!$Isvalid -and $throwOnFailure) {
-            throw [System.ArgumentException]'Ivalid Email address.'
-        }
-        return $Isvalid
-    }
-}
-class  OIuser {
-    [ValidateNotNullOrEmpty()][string]$Name
-    [System.Collections.Generic.List[Email]]$Emails
-    OIuser([string]$Name) {
-        $this.Name = $Name
-        $this.Emails = [System.Collections.Generic.List[Email]]::new()
-    }
-    OIuser([string]$Name, [Email[]]$Emails) {
-        $this.Name = $Name
-        $this.Emails = [System.Collections.Generic.List[Email]]::new()
-        foreach ($email in $Emails) { $this.AddEmail($email) }
-    }
-    OIuser([string]$Name, [string[]]$Emails) {
-        $this.Name = $Name
-        foreach ($email in $Emails) { $this.AddEmail($email) }
-    }
-    [void] AddEmail([string]$Email) {
-        [void]$this.Emails.Add([Email]::new($Email))
-    }
-    [void] AddEmail([Email]$Email) {
-        [void]$this.Emails.Add($Email)
-    }
-}
-# (Online Identity)
-class OI {
-    [string]$Title
-    [OIuser]$User
-    [System.Collections.Generic.List[URL]]$Url
-    [System.Collections.Generic.List[OIsecret]]$secrets
-    OI([string]$Title, [string]$userName) {
-        $this._init(); $this.Title = $Title
-        $this.User = [OIuser]::new($userName)
-    }
-    OI([string]$Title, [string]$userName, [string[]]$secrets) {
-        $this._init(); $this.Title = $Title
-        $this.User = [OIuser]::new($userName)
-        foreach ($sec in $secrets) { $this.AddSecret($sec) }
-    }
-    OI([string]$Title, [string]$userName, [string[]]$Emails, [string[]]$Urls, [OIsecret[]]$secrets) {
-        $this._init(); $this.Title = $Title
-        $this.User = [OIuser]::new($userName, $Emails)
-        foreach ($url in $Urls) { [void]$this.Url.Add([URL]::new($url)) }
-        foreach ($sec in $secrets) { $this.AddSecret($sec) }
-    }
-    [void] AddEmail([string]$Email) {
-        $this.User.AddEmail($Email)
-    }
-    [void] AddEmail([Email]$Email) {
-        $this.User.AddEmail($Email)
-    }
-    [void] AddUrl([string]$url) {
-        [void]$this.Url.Add([URL]::new($url))
-    }
-    [void] AddUrl([URL]$url) {
-        [void]$this.Url.Add($url)
-    }
-    [void] AddSecret([OIsecret]$secret) {
-        $this.secrets.Add($secret)
-    }
-    [void] AddSecret([string]$secret) {
-        $this.secrets.Add([OIsecret]::new($secret))
-    }
-    [void] AddSecret([securestring]$secret) {
-        $this.secrets.Add([OIsecret]::new($secret))
-    }
-    [psobject[]]hidden UploadToVault() {
-        $object = $this
-        $Clrsec = @()
-        $object.secrets | ForEach-Object {
-            $Clrsec += [PSCustomObject]@{
-                type  = $_.type.Tostring()
-                value = [XConvert]::Tostring($_.value)
-            }
-        }
-        $object.secrets = $Clrsec
-        return $object
-    }
-    [void]hidden _init() {
-        $this.Url = [System.Collections.Generic.List[URL]]::new()
-        $this.secrets = [System.Collections.Generic.List[OIsecret]]::new()
-    }
-}
-#endregion OnlineIdentity
 
 #region    OnedriveClient
 # Onedrive Helper Class to read and store files in Onedrive personal vault
@@ -6287,13 +6137,13 @@ class CommandLineParser {
 
 class CfgList {
     CfgList() {
-        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type NoteProperty).count })))
-        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type NoteProperty).Name })))
+        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
+        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
     }
     CfgList([hashtable[]]$array) {
         $this.Add($array)
-        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type NoteProperty).count })))
-        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type NoteProperty).Name })))
+        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
+        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
     }
     [void] Add([string]$key, [System.Object]$value) {
         [ValidateNotNullOrEmpty()][string]$key = $key
@@ -6320,7 +6170,19 @@ class CfgList {
     }
     [void] Set([hashtable]$item) {
         $Keys = $item.Keys | Sort-Object -Unique
-        foreach ($key in $Keys) { if ($null -eq $this.$key) { $this.Add($key, $item[$key]) } else { $this.$key = $item[$key] } }
+        foreach ($key in $Keys) {
+            $value = $item[$key]
+            [ValidateNotNullOrEmpty()][string]$key = $key
+            [ValidateNotNullOrEmpty()][System.Object]$value = $value
+            if ($this.psObject.Properties.Name.Contains([string]$key)) {
+                $this."$key" = $value
+            } else {
+                $this.Add($key, $value)
+            }
+        }
+    }
+    [void] Set([System.Collections.Specialized.OrderedDictionary]$dict) {
+        $dict.Keys.Foreach({ $this.Set($_, $dict["$_"]) });
     }
     [void] LoadJson([string]$FilePath) {
         $this.LoadJson($FilePath, [System.Text.Encoding]::UTF8)
@@ -6345,6 +6207,13 @@ class CfgList {
     }
     [string] ToJson() {
         return [string]($this | Select-Object -ExcludeProperty count | ConvertTo-Json)
+    }
+    [Ordered] ToOrdered() {
+        $dict = [Ordered]@{}; $Keys = $this.PsObject.Properties.Where({ $_.Membertype -like "*Property" }).Name
+        if ($Keys.Count -gt 0) {
+            $Keys | ForEach-Object { [void]$dict.Add($_, $this."$_") }
+        }
+        return $dict
     }
     [string] ToString() {
         $r = $this.ToArray(); $s = ''
@@ -6732,22 +6601,6 @@ function New-K3Y {
             return [xconvert]::Tostring($k3y)
         }
         return $k3y
-    }
-}
-function New-Converter {
-    <#
-    .SYNOPSIS
-        Creates a new [XConvert] object
-    .DESCRIPTION
-        Creates a custom Converter object.
-    #>
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = '')]
-    [CmdletBinding()]
-    [OutputType([XConvert])]
-    param ()
-
-    end {
-        return [XConvert]::new()
     }
 }
 #region     Encrpt-Decrp
