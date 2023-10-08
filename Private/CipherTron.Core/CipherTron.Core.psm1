@@ -23,6 +23,8 @@ using namespace System.Text
 using namespace System.Text
 using namespace System.Security
 using namespace System.Runtime.InteropServices
+using namespace System.Drawing
+using namespace System.Windows.Forms
 
 $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
 if ($dataFile.Exists) {
@@ -473,6 +475,58 @@ class XConvert {
             throw [System.InvalidOperationException]::new('$InputText.Trim().Length Should Be exactly 16. Ex: [xconvert]::ToGuid([xgen]::RandomName(16))')
         }
         return [guid]::new([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($InputText)).Replace("-", "").ToLower().Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-"))
+    }
+    static [void] ToImage([string[]]$InputObject, [string]$OutPath) {
+        [xconvert]::ToImage($InputObject, $OutPath, [System.Drawing.Imaging.ImageFormat]::Png, $false)
+    }
+    static [void] ToImage([string[]]$InputObject, [string]$OutPath, [System.Drawing.Imaging.ImageFormat]$ImageFormat, [bool]$CopyToClipboard) {
+        # can render multiple lines, so $lines exists to gather
+        # all input from the pipeline into one collection
+        [Collections.Generic.List[String]]$lines = @();
+        # join the array of lines into a string, so the
+        # drawing routines can render the multiline string directly
+        # without us looping over them or calculating line offsets, etc.
+        [string]$lines = $lines -join "`n"
+
+        # placeholder 1x1 pixel bitmap, will be used to measure the line
+        # size, before re-creating it big enough for all the text
+        [Bitmap]$bmpImage = [Bitmap]::new(1, 1)
+
+        # Create the Font, using any available MonoSpace font
+        # hardcoded size and style, because it's easy
+        [Font]$font = [Font]::new([System.Drawing.FontFamily]::GenericMonospace, 12, [FontStyle]::Regular, [GraphicsUnit]::Pixel)
+
+        # Create a graphics object and measure the text's width and height,
+        # in the chosen font, with the chosen style.
+        [System.Drawing.Graphics]$Graphics = [System.Drawing.Graphics]::FromImage($BmpImage)
+        [int]$width  = $Graphics.MeasureString($lines, $Font).Width
+        [int]$height = $Graphics.MeasureString($lines, $Font).Height
+
+        # Recreate the bmpImage big enough for the text.
+        # and recreate the Graphics context from the new bitmap
+        $BmpImage = [Bitmap]::new($width, $height)
+        $Graphics = [System.Drawing.Graphics]::FromImage($BmpImage)
+
+        # Set Background color, and font drawing styles
+        # hard coded because early version, it's easy
+        $Graphics.Clear([Color]::Black)
+        $Graphics.SmoothingMode = [Drawing2D.SmoothingMode]::Default
+        $Graphics.TextRenderingHint = [Text.TextRenderingHint]::SystemDefault
+        $brushColour = [System.Drawing.SolidBrush]::new([Color]::FromArgb(200, 200, 200))
+
+        # Render the text onto the image
+        $Graphics.DrawString($lines, $Font, $brushColour, 0, 0)
+        $Graphics.Flush()
+
+        if ($OutPath) {
+            [System.IO.Directory]::SetCurrentDirectory($(Get-Variable executionContext -ValueOnly).SessionState.Path.CurrentLocation.Path)
+            $OutPath = [System.IO.Path]::GetFullPath($OutPath)
+            $bmpImage.Save($OutPath, $ImageFormat)
+        }
+
+        if ($CopyToClipboard) {
+            [Windows.Forms.Clipboard]::SetImage($bmpImage)
+        }
     }
     [SecureString]static ToSecurestring([string]$String) {
         $SecureString = $null; Set-Variable -Name SecureString -Scope Local -Visibility Private -Option Private -Value ([System.Security.SecureString]::new());
@@ -5480,7 +5534,7 @@ $prompt
     }
     static [version] GetVersion() {
         # Returns the current version of the chatbot.
-        return [version]$script:localizedData.ModuleVersion
+        return [version]::New($script:localizedData.ModuleVersion)
     }
     [void] hidden Exit() {
         $this.Exit($false);
