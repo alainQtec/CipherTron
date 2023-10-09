@@ -483,48 +483,114 @@ class XConvert {
         # can render multiple lines, so $lines exists to gather
         # all input from the pipeline into one collection
         [Collections.Generic.List[String]]$lines = @();
-        # join the array of lines into a string, so the
-        # drawing routines can render the multiline string directly
-        # without us looping over them or calculating line offsets, etc.
-        [string]$lines = $lines -join "`n"
-
-        # placeholder 1x1 pixel bitmap, will be used to measure the line
-        # size, before re-creating it big enough for all the text
-        [Bitmap]$bmpImage = [Bitmap]::new(1, 1)
-
-        # Create the Font, using any available MonoSpace font
-        # hardcoded size and style, because it's easy
-        [Font]$font = [Font]::new([System.Drawing.FontFamily]::GenericMonospace, 12, [FontStyle]::Regular, [GraphicsUnit]::Pixel)
-
-        # Create a graphics object and measure the text's width and height,
-        # in the chosen font, with the chosen style.
-        [System.Drawing.Graphics]$Graphics = [System.Drawing.Graphics]::FromImage($BmpImage)
-        [int]$width  = $Graphics.MeasureString($lines, $Font).Width
-        [int]$height = $Graphics.MeasureString($lines, $Font).Height
-
-        # Recreate the bmpImage big enough for the text.
-        # and recreate the Graphics context from the new bitmap
-        $BmpImage = [Bitmap]::new($width, $height)
-        $Graphics = [System.Drawing.Graphics]::FromImage($BmpImage)
-
-        # Set Background color, and font drawing styles
-        # hard coded because early version, it's easy
-        $Graphics.Clear([Color]::Black)
-        $Graphics.SmoothingMode = [Drawing2D.SmoothingMode]::Default
-        $Graphics.TextRenderingHint = [Text.TextRenderingHint]::SystemDefault
-        $brushColour = [System.Drawing.SolidBrush]::new([Color]::FromArgb(200, 200, 200))
-
-        # Render the text onto the image
-        $Graphics.DrawString($lines, $Font, $brushColour, 0, 0)
-        $Graphics.Flush()
-
+        # each incoming string from the pipeline, works even
+        # if it's a multiline-string. If it's an array of string
+        # this implicitly joins them using $OFS
+        $null = $lines.Add($InputObject)
         if ($OutPath) {
             [System.IO.Directory]::SetCurrentDirectory($(Get-Variable executionContext -ValueOnly).SessionState.Path.CurrentLocation.Path)
             $OutPath = [System.IO.Path]::GetFullPath($OutPath)
-            $bmpImage.Save($OutPath, $ImageFormat)
+            $OutFile = [IO.FileInfo]::New($OutPath)
+            if ($OutFile.Exists) {
+                # Get the source image content
+                [Bitmap]$bmp = [Bitmap]::FromFile($SourceImage)
+                # Get the source text bytes to encode. We will use the pattern
+                # content length, 0, content
+                # so we can work out how much to read out of the image when importing.
+
+                [byte[]]$sourceBytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+
+                [byte[]]$bytesToEncode = @([Text.Encoding]::UTF8.GetBytes([string]$sourceBytes.Count)) + @(0) + $sourceBytes
+
+
+                # Step through the text bytes and image pixels. Each byte breaks into 8 bits, each bit
+                # goes into one pixel
+                $x = 0
+                $y = 0
+                $bytesToEncode | ForEach-Object {
+
+                    # split byte into 8 bits, shift them right far enough to make them 0 or 1
+                    ($_ -band 128) -shr 7
+                    ($_ -band 64 ) -shr 6
+                    ($_ -band 32 ) -shr 5
+                    ($_ -band 16 ) -shr 4
+                    ($_ -band 8  ) -shr 3
+                    ($_ -band 4  ) -shr 2
+                    ($_ -band 2  ) -shr 1
+                    ($_ -band 1  )
+
+                } | foreach-object {
+
+
+                    # map each bit into the Red channel value of a pixel, modifying it only by 1 in 256
+                    $sourcePixel = $bmp.GetPixel($x, $y)
+
+                    $replacementPixel = [System.Drawing.Color]::FromArgb(
+                            $sourcePixel.A,
+                            (($sourcePixel.R -band 254) -bor $_), # merge bit into lowest bit of R
+                            $sourcePixel.G,
+                            $sourcePixel.B
+                        )
+
+
+                    # update the image with the modified pixel
+                    $bmp.SetPixel($x, $y, $replacementPixel)
+
+
+
+                    # Move to next pixel, (right right right and wrap at end of row)
+                    $x++
+                    if ($x -ge $bmp.Width)
+                    {
+                        $y++
+                        $x = 0
+                    }
+
+                }
+                # Convert names like .\file1.bmp to a full path, and export image
+                [System.IO.Directory]::SetCurrentDirectory(((Get-Location -PSProvider FileSystem).ProviderPath))
+                $DestinationPath = [System.IO.Path]::GetFullPath($DestinationPath)
+                $bmp.Save($DestinationPath, [Imaging.ImageFormat]::Bmp)
+            } else {
+                # join the array of lines into a string, so the
+                # drawing routines can render the multiline string directly
+                # without us looping over them or calculating line offsets, etc.
+                [string]$lines = $lines -join "`n"
+
+                # placeholder 1x1 pixel bitmap, will be used to measure the line
+                # size, before re-creating it big enough for all the text
+                [Bitmap]$bmpImage = [Bitmap]::new(1, 1)
+
+                # Create the Font, using any available MonoSpace font
+                # hardcoded size and style, because it's easy
+                [Font]$font = [Font]::new([System.Drawing.FontFamily]::GenericMonospace, 12, [FontStyle]::Regular, [GraphicsUnit]::Pixel)
+
+                # Create a graphics object and measure the text's width and height,
+                # in the chosen font, with the chosen style.
+                [System.Drawing.Graphics]$Graphics = [System.Drawing.Graphics]::FromImage($BmpImage)
+                [int]$width  = $Graphics.MeasureString($lines, $Font).Width
+                [int]$height = $Graphics.MeasureString($lines, $Font).Height
+
+                # Recreate the bmpImage big enough for the text.
+                # and recreate the Graphics context from the new bitmap
+                $BmpImage = [Bitmap]::new($width, $height)
+                $Graphics = [System.Drawing.Graphics]::FromImage($BmpImage)
+
+                # Set Background color, and font drawing styles
+                # hard coded because early version, it's easy
+                $Graphics.Clear([Color]::Black)
+                $Graphics.SmoothingMode = [Drawing2D.SmoothingMode]::Default
+                $Graphics.TextRenderingHint = [Text.TextRenderingHint]::SystemDefault
+                $brushColour = [System.Drawing.SolidBrush]::new([Color]::FromArgb(200, 200, 200))
+
+                # Render the text onto the image
+                $Graphics.DrawString($lines, $Font, $brushColour, 0, 0)
+                $Graphics.Flush()
+                $bmpImage.Save($OutPath, $ImageFormat)
+            }
         }
 
-        if ($CopyToClipboard) {
+        if ($CopyToClipboard -and $bmpImage) {
             [Windows.Forms.Clipboard]::SetImage($bmpImage)
         }
     }
