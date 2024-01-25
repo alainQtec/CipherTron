@@ -491,38 +491,37 @@ class XConvert {
             $OutPath = New-Item -ItemType File -Path ([IO.Path]::Combine([IO.Path]::GetTempPath(), [xgen]::RandomName(30) + '.tmp')) | Select-Object -ExpandProperty Path
         }
         [System.IO.Directory]::SetCurrentDirectory($(Get-Variable executionContext -ValueOnly).SessionState.Path.CurrentLocation.Path)
-            $OutPath = [System.IO.Path]::GetFullPath($OutPath)
-            $OutFile = [IO.FileInfo]::New($OutPath)
-            $bmpImage = $null
-            if ($OutFile.Exists) {
-                # Get the source image content
-                [System.Drawing.Bitmap]$bmp = [System.Drawing.Bitmap]::FromFile($SourceImage.FullName)
-                # Get the source text bytes to encode. We will use the pattern
-                # content length, 0, content
-                # so we can work out how much to read out of the image when importing.
+        $OutPath = [System.IO.Path]::GetFullPath($OutPath)
+        $OutFile = [IO.FileInfo]::New($OutPath)
+        $bmpImage = $null
+        if ($OutFile.Exists) {
+        # Get the source image content
+        [System.Drawing.Bitmap]$bmp = [System.Drawing.Bitmap]::FromFile($SourceImage.FullName)
+        # Get the source text bytes to encode. We will use the pattern
+        # content length, 0, content
+        # so we can work out how much to read out of the image when importing.
 
-                [byte[]]$sourceBytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+        [byte[]]$sourceBytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
 
-                [byte[]]$bytesToEncode = @([Text.Encoding]::UTF8.GetBytes([string]$sourceBytes.Count)) + @(0) + $sourceBytes
+        [byte[]]$bytesToEncode = @([Text.Encoding]::UTF8.GetBytes([string]$sourceBytes.Count)) + @(0) + $sourceBytes
 
 
-                # Step through the text bytes and image pixels. Each byte breaks into 8 bits, each bit
-                # goes into one pixel
-                $x = 0
-                $y = 0
-                $bytesToEncode | ForEach-Object {
-                    # split byte into 8 bits, shift them right far enough to make them 0 or 1
-                    ($_ -band 128) -shr 7
-                    ($_ -band 64 ) -shr 6
-                    ($_ -band 32 ) -shr 5
-                    ($_ -band 16 ) -shr 4
-                    ($_ -band 8  ) -shr 3
-                    ($_ -band 4  ) -shr 2
-                    ($_ -band 2  ) -shr 1
-                    ($_ -band 1  )
-
-                } | ForEach-Object {
-                    # map each bit into the Red channel value of a pixel, modifying it only by 1 in 256
+        # Step through the text bytes and image pixels. Each byte breaks into 8 bits, each bit
+        # goes into one pixel
+        $x = 0
+        $y = 0
+        $bytesToEncode | ForEach-Object {
+        # split byte into 8 bits, shift them right far enough to make them 0 or 1
+            ($_ -band 128) -shr 7
+            ($_ -band 64 ) -shr 6
+            ($_ -band 32 ) -shr 5
+            ($_ -band 16 ) -shr 4
+            ($_ -band 8  ) -shr 3
+            ($_ -band 4  ) -shr 2
+            ($_ -band 2  ) -shr 1
+            ($_ -band 1  )
+        } | ForEach-Object {
+        # map each bit into the Red channel value of a pixel, modifying it only by 1 in 256
                     $sourcePixel = $bmp.GetPixel($x, $y)
                     $replacementPixel = [System.Drawing.Color]::FromArgb(
                         $sourcePixel.A,
@@ -1315,9 +1314,9 @@ class Base85 : EncodingBase {
                 [System.UInt16]$ByteLength = $BytesRead.Length
                 if ($ByteLength -lt 4) {
                     [System.Byte[]]$WorkingBytes = ,0x00 * 4
-                    [System.Buffer]::BlockCopy($BytesRead,0,$WorkingBytes,0,$ByteLength)
-                    [System.Array]::Resize([ref]$BytesRead,4)
-                    [System.Buffer]::BlockCopy($WorkingBytes,0,$BytesRead,0,4)
+                    [System.Buffer]::BlockCopy($BytesRead, 0,$WorkingBytes,0,$ByteLength)
+                    [System.Array]::Resize([ref]$BytesRead, 4)
+                    [System.Buffer]::BlockCopy($WorkingBytes, 0, $BytesRead,0,4)
                 }
                 if ([BitConverter]::IsLittleEndian) {
                     [Array]::Reverse($BytesRead)
@@ -1329,9 +1328,9 @@ class Base85 : EncodingBase {
                     [System.Char[]]$A85Chunk = "z"
                 } else {
                     [System.Char[]]$A85Chunk = ,0x00 * $ByteLen
-                    $A85Chars[0] = [Base85]::GetChars([Math]::Floor(($Sum / [Math]::Pow(85,4)) % 85) + 33)[0]
-                    $A85Chars[1] = [Base85]::GetChars([Math]::Floor(($Sum / [Math]::Pow(85,3)) % 85) + 33)[0]
-                    $A85Chars[2] = [Base85]::GetChars([Math]::Floor(($Sum / [Math]::Pow(85,2)) % 85) + 33)[0]
+                    $A85Chars[0] = [Base85]::GetChars([Math]::Floor(($Sum / [Math]::Pow(85, 4)) % 85) + 33)[0]
+                    $A85Chars[1] = [Base85]::GetChars([Math]::Floor(($Sum / [Math]::Pow(85, 3)) % 85) + 33)[0]
+                    $A85Chars[2] = [Base85]::GetChars([Math]::Floor(($Sum / [Math]::Pow(85, 2)) % 85) + 33)[0]
                     $A85Chars[3] = [Base85]::GetChars([Math]::Floor(($Sum / 85) % 85) + 33)[0]
                     $A85Chars[4] = [Base85]::GetChars([Math]::Floor($Sum % 85) + 33)[0]
                     [System.Array]::Copy($A85Chars,$A85Chunk,$ByteLen)
@@ -1371,9 +1370,9 @@ class Base85 : EncodingBase {
         return $EncodedString
     }
     static [byte[]] Decode([string]$text) {
-        $text = $text.Replace(" ","").Replace("`r`n","").Replace("`n","")
+        $text = $text.Replace(" ", "").Replace("`r`n", "").Replace("`n", "")
         $decoded = $null; if ($text.StartsWith("<~") -or $text.EndsWith("~>")) {
-            $text = $text.Replace("<~","").Replace("~>","")
+            $text = $text.Replace("<~", "").Replace("~>", "")
         }
         if ($text -match $([Base85]::NON_A85_Pattern)) {
             Throw "Invalid Ascii85 data detected in input stream."
@@ -1952,7 +1951,7 @@ class OTPKIT {
         $otpPeriod = if (-not [string]::IsNullOrEmpty($parseOtpUrl["period"])) { $parseOtpUrl["period"] } else { 30 }
         $otpDigits = if (-not [string]::IsNullOrEmpty($parseOtpUrl["digits"])) { $parseOtpUrl["digits"] } else { 6 }
         $otpSecret = $parseOtpUrl["secret"]
-        return GetOtp "$otpSecret" "$otpDigits" "$otpPeriod"
+        return [OTPKIT]::GetOtp("$otpSecret", $otpDigits, "$otpPeriod")
     }
 
     static [string] GetOtp([string]$SECRET) {
@@ -3572,7 +3571,7 @@ class AesGCM {
             $sha256 = [System.Security.Cryptography.SHA256]::Create()
             $HostOS = $(if ($(Get-Variable PSVersionTable -Value).PSVersion.Major -le 5 -or $(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" });
             if ($HostOS -eq "Windows") {
-                    if ([string]::IsNullOrWhiteSpace($Id)) {
+                if ([string]::IsNullOrWhiteSpace($Id)) {
                     $machineId = Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID
                     Set-Item -Path Env:\MachineId -Value $([convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($machineId))));
                 }
@@ -5520,7 +5519,8 @@ class CipherTron {
     [void] ShowMenu() {
         if ($null -eq [CipherTron]::records_url) {
             if ([CipherTron]::useverbose) { "[+] Get records_url ..." | Write-Host -ForegroundColor Magenta }
-            [CipherTron]::records_url = [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.secret_Info_csv.raw_url)
+            # for now just use this file for multiple encryption POC
+            [CipherTron]::records_url = [uri]::new([GitHub]::GetGist('alainQtec', '0710a1d4a833c3b618136e5ea98ca0b2').files.secret_Info.raw_url)
         }
         if (![IO.File]::Exists($this.records.FullName)) {
             if ([CipherTron]::useverbose) { "[+] Download records .." | Write-Host -ForegroundColor Magenta }
@@ -5884,14 +5884,14 @@ class CipherTron {
 $prompt
 "@ -Debug
         $body = [Ordered]@{
-            model = $options.model
-            prompt = $prompt
-            temperature = $options.temperature
-            max_tokens = $options.max_tokens
-            top_p = $options.top_p
+            model             = $options.model
+            prompt            = $prompt
+            temperature       = $options.temperature
+            max_tokens        = $options.max_tokens
+            top_p             = $options.top_p
             frequency_penalty = $options.frequency_penalty
-            presence_penalty = $options.presence_penalty
-            stop = $options.stop
+            presence_penalty  = $options.presence_penalty
+            stop              = $options.stop
         }
         $body = $body | ConvertTo-Json -Depth 5
         $Rest_Result = $null; $GptResponse = [string]::Empty
@@ -5979,7 +5979,7 @@ $prompt
         }
         $body = [ordered]@{
             prompt = $Description
-            size = $targetSize
+            size   = $targetSize
         } | ConvertTo-Json
 
         $result = Invoke_OpenAIAPI -Uri 'https://api.openai.com/v1/images/generations' -Body $body -Method Post
@@ -6065,28 +6065,28 @@ $prompt
         #+++ Set commands and their aliases:
         # param([CipherTron]$bot)
         $Commands = [Ordered]@{
-            cls = { [System.Console]::Clear() }
-            exit = { $this._Exit($true) }
-            help = { [void][cli]::write($this.Config.UsageHelp) }
-            hash = { $this.User.Hash() }
-            sign = { $this.User.Sign() }
-            encrypt = { $this.User.Encrypt() }
-            decrypt = { $this.User.Decrypt() }
-            EditConfig = { $this.EditConfig() }
-            SetConfigs = { $this.SetConfigs($false) }
+            cls           = { [System.Console]::Clear() }
+            exit          = { $this._Exit($true) }
+            help          = { [void][cli]::write($this.Config.UsageHelp) }
+            hash          = { $this.User.Hash() }
+            sign          = { $this.User.Sign() }
+            encrypt       = { $this.User.Encrypt() }
+            decrypt       = { $this.User.Decrypt() }
+            EditConfig    = { $this.EditConfig() }
+            SetConfigs    = { $this.SetConfigs($false) }
             ToggleOffline = { [CipherTron]::ToggleOffline() }
-            SavetoImage = { [CipherTron]::SavetoImage() }
-            NewPassword = { [CipherTron]::NewPassword() }
-            # generateKey = { [KeyManager]::generateKey() }
-            # importKey = { [KeyManager]::importKey() }
-            # deleteKey = { [KeyManager]::deleteKey() }
-            # rotateKeys = { [KeyManager]::rotateKeys() }
-            # exportKey = { [KeyManager]::exportKey() }
-            # validateKey = { [KeyManager]::validateKey() }
-            startSession = { $this.Chat() }
-            endSession = { $this.endSession() }
-            saveSession = { $this.saveSession() }
-            loadSession = { $this.loadSession() }
+            SavetoImage   = { [CipherTron]::SavetoImage() }
+            NewPassword   = { [CipherTron]::NewPassword() }
+            generateKey   = { [KeyManager]::generateKey() }
+            importKey     = { [KeyManager]::importKey() }
+            deleteKey     = { [KeyManager]::deleteKey() }
+            rotateKeys    = { [KeyManager]::rotateKeys() }
+            exportKey     = { [KeyManager]::exportKey() }
+            validateKey   = { [KeyManager]::validateKey() }
+            startSession  = { $this.Chat() }
+            endSession    = { $this.endSession() }
+            saveSession   = { $this.saveSession() }
+            loadSession   = { $this.loadSession() }
         }
         $Commands.keys | ForEach-Object { $this.Presets.Add([PresetCommand]::new("$_", $Commands[$_])) }
         $($this.Config.Cmd_Aliases | Get-Member -Type NoteProperty).Name | ForEach-Object {
@@ -6123,43 +6123,43 @@ $prompt
     }
     hidden [hashtable] Get_default_Config() {
         $defaultConfig = @{
-            emojis = @{ #ie: Use emojis as preffix to indicate messsage source.
-                Bot = '🤖 : '
+            emojis        = @{ #ie: Use emojis as preffix to indicate messsage source.
+                Bot  = '🤖 : '
                 user = '{0} : ' -f ($this.ChatSession.User.preferences.Avatar_Emoji)
             }
-            GPt_Options = @{
-                model = 'text-davinci-003'
-                temperature = 1.0
-                max_tokens = 256
-                top_p = 1.0
+            GPt_Options   = @{
+                model             = 'text-davinci-003'
+                temperature       = 1.0
+                max_tokens        = 256
+                top_p             = 1.0
                 frequency_penalty = 0.0
-                presence_penalty = 0.0
+                presence_penalty  = 0.0
             }
-            Quick_Exit = $this.ChatSession.User.preferences.Quick_Exit
-            ERROR_NAMES = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
-            First_Query = "Hi, can you introduce yourself in one sentense?"
-            OfflineHello = "Hello; I am $($this.ChatSession.ChatLog.Recvr), your cryptography helper.`n"
-            OfflineNoAns = "I'm sorry, I can't understand what you mean; Please Connect internet and try again.`n"
-            NoApiKeyHelp = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
+            Quick_Exit    = $this.ChatSession.User.preferences.Quick_Exit
+            ERROR_NAMES   = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
+            First_Query   = "Hi, can you introduce yourself in one sentense?"
+            OfflineHello  = "Hello; I am $($this.ChatSession.ChatLog.Recvr), your cryptography helper.`n"
+            OfflineNoAns  = "I'm sorry, I can't understand what you mean; Please Connect internet and try again.`n"
+            NoApiKeyHelp  = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
             LogOfflineErr = $false # If true then chatlogs will include results like OfflineNoAns.
             ThrowNoApiKey = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
-            ChatDescrptn = "The following is a conversation of $($this.ChatSession.ChatLog.Sendr) with an A.I cryptography assistant named $($this.ChatSession.ChatLog.Recvr). The assistant is a helpful, creative, and clever security expert with over 20 years of experience in cryptography and PowerShell Scripting.`n"
-            UsageHelp = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
+            ChatDescrptn  = "The following is a conversation of $($this.ChatSession.ChatLog.Sendr) with an A.I cryptography assistant named $($this.ChatSession.ChatLog.Recvr). The assistant is a helpful, creative, and clever security expert with over 20 years of experience in cryptography and PowerShell Scripting.`n"
+            UsageHelp     = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
             Bot_data_Path = [CipherTron]::Get_dataPath()
             # Default aliases for Preset commands:
             # Note: Make sure each Key has its own match in $this.Presets.keys, otherwise it won't work.
-            Cmd_Aliases = [Ordered]@{
-                exit = ('close', 'bye')
-                help = ('view usage', '--help')
-                hash = ('create hash', 'hash this')
-                sign = ('sign this', 'Create a new signature')
-                encrypt = ('encrypt this', 'encipher')
-                decrypt = ('decrypt this', 'decipher')
-                EditConfig = ('edit config', 'settings')
-                SetConfigs = ('resfresh config', 'Load config')
+            Cmd_Aliases   = [Ordered]@{
+                exit          = ('close', 'bye')
+                help          = ('view usage', '--help')
+                hash          = ('create hash', 'hash this')
+                sign          = ('sign this', 'Create a new signature')
+                encrypt       = ('encrypt this', 'encipher')
+                decrypt       = ('decrypt this', 'decipher')
+                EditConfig    = ('edit config', 'settings')
+                SetConfigs    = ('resfresh config', 'Load config')
                 ToggleOffline = ('Offline Mode', 'toggle Offline')
-                SavetoImage = ('Save to Image', 'hide in Image')
-                NewPassword = ('new password', 'new-password')
+                SavetoImage   = ('Save to Image', 'hide in Image')
+                NewPassword   = ('new password', 'new-password')
             }
         }
         return $defaultConfig
@@ -7038,7 +7038,6 @@ class CfgList {
         foreach ($key in $Keys) {
             $value = $item[$key]
             [ValidateNotNullOrEmpty()][string]$key = $key
-            [ValidateNotNullOrEmpty()][System.Object]$value = $value
             if ($this.psObject.Properties.Name.Contains([string]$key)) {
                 $this."$key" = $value
             } else {
