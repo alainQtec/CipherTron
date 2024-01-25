@@ -40,7 +40,9 @@ Your all in one Cryptography Powershell module.
 
 ## 📖 **Description**
 
-CipherTron is a module to help you with all your cryptography needs. It is designed to be useful to both technical and beginners, and can be accessed through a helper bot. Cryptography is an important field with a wide range of practical applications, and anyone with an interest in security or computer science can benefit.
+Ciphertron is a personnal Cryptography assistance bot writen written as a PowerShell module. 
+
+Cryptography is an important field with a wide range of practical applications, and anyone with an interest in security or computer science can benefit.
 
 <img align="right" alt="logo" height="319" src="https://github.com/alainQtec/CipherTron/blob/main/docs/images/CryptographyNerd.png">
 
