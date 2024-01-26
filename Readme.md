@@ -1,4 +1,4 @@
-<img align="right" alt="logo" src="https://user-images.githubusercontent.com/79479952/190868846-075673ee-44f8-4a3d-9640-2a254b27cbb6.png">
+<img align="right" alt="logo" src="https://github.com/alainQtec/CipherTron/assets/79479952/b140dbd3-8934-4efd-88e5-c2622273b157">
 
 ## [**CipherTron**](https://www.PowerShellGallery.com/packages/CipherTron)
 Your all in one Cryptography Powershell module.
