@@ -523,6 +523,38 @@ class CryptoBase {
     static [void] ValidateCompression([string]$Compression) {
         if ($Compression -notin ([Enum]::GetNames('Compression' -as 'Type'))) { Throw [System.InvalidCastException]::new("The name '$Compression' is not a valid [Compression]`$typeName.") };
     }
+    static [IO.FileInfo] DownloadFile([uri]$url) {
+        # No $outFile so we create ones ourselves, and use suffix to prevent duplicaltes
+        $randomSuffix = [Guid]::NewGuid().Guid.subString(15).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1)))
+        return [CryptoBase]::DownloadFile($url, "$(Split-Path $url.AbsolutePath -Leaf)_$randomSuffix");
+    }
+    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile) {
+        $outFile = [CryptoBase]::GetUnResolvedPath($outFile);
+        if ([System.IO.Directory]::Exists($outFile)) {
+            throw [InvalidArgumentException]::new("outFile", "Please provide valid file path")
+        }
+        if ([IO.File]::Exists($outFile)) { Remove-Item $outFile -Force }
+        $stream = $null; $fileStream = $null; $name = Split-Path $url -Leaf;
+        $request = [System.Net.HttpWebRequest]::Create($url)
+        $request.UserAgent = "Mozilla/5.0"
+        $response = $request.GetResponse()
+        $contentLength = $response.ContentLength
+        $stream = $response.GetResponseStream()
+        $buffer = New-Object byte[] 1024
+        $fileStream = [System.IO.FileStream]::new($outFile, [System.IO.FileMode]::CreateNew)
+        $totalBytesReceived = 0
+        $totalBytesToReceive = $contentLength
+        while ($totalBytesToReceive -gt 0) {
+            $bytesRead = $stream.Read($buffer, 0, 1024)
+            $totalBytesReceived += $bytesRead
+            $totalBytesToReceive -= $bytesRead
+            $fileStream.Write($buffer, 0, $bytesRead)
+            $percentComplete = [int]($totalBytesReceived / $contentLength * 100)
+            Write-Progress -Activity "Downloading $name to $Outfile" -Status "Progress: $percentComplete%" -PercentComplete $percentComplete
+        }
+        try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
+        return (Get-Item $outFile)
+    }
 }
 #endregion CryptoBase
 
@@ -1363,6 +1395,29 @@ class Base85 : EncodingBase {
         }
         return $EncodedString
     }
+    static [void] Encode([IO.FileInfo]$File) {
+        [Base85]::Encode($File, $false, $File.FullName);
+    }
+    static [void] Encode([IO.FileInfo]$File, [bool]$Protect) {
+        [Base85]::Encode($File, $Protect, $File.FullName);
+    }
+    static [void] Encode([IO.FileInfo]$File, [bool]$Protect, [string]$OutFile) {
+        [Base85]::Encode($File, [securestring]$(if ($Protect) { [AesGCM]::GetPassword() }else { [securestring]::new() }), $OutFile)
+    }
+    static [void] Encode([IO.FileInfo]$File, [securestring]$Password, [string]$OutFile) {
+        [ValidateNotNullOrEmpty()][string]$OutFile = [CryptoBase]::GetUnResolvedPath($OutFile);
+        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = [CryptoBase]::GetResolvedPath($File.FullName);
+        if (![string]::IsNullOrWhiteSpace([xconvert]::ToString($Password))) { [AesGCM]::Encrypt($File, $Password, $File.FullName) };
+        $streamReader = [System.IO.FileStream]::new($File.FullName, [System.IO.FileMode]::Open)
+        $ba = [byte[]]::New($streamReader.Length);
+        [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
+        [void]$streamReader.Close();
+        $encodedString = [Base85]::Encode($ba)
+        $encodedBytes = [EncodingBase]::new().GetBytes($encodedString);
+        $streamWriter = [System.IO.FileStream]::new($OutFile, [System.IO.FileMode]::OpenOrCreate);
+        [void]$streamWriter.Write($encodedBytes, 0, $encodedBytes.Length);
+        [void]$streamWriter.Close()
+    }
     static [byte[]] Decode([string]$text) {
         $text = $text.Replace(" ", "").Replace("`r`n", "").Replace("`n", "")
         $decoded = $null; if ($text.StartsWith("<~") -or $text.EndsWith("~>")) {
@@ -1429,8 +1484,24 @@ class Base85 : EncodingBase {
         }
         return $decoded
     }
+    static [void] Decode([IO.FileInfo]$File) {
+        [Base85]::Decode($File, $false, $File);
+    }
+    static [void] Decode([IO.FileInfo]$File, [bool]$UnProtect) {
+        [Base85]::Decode($File, $UnProtect, $File);
+    }
+    static [void] Decode([IO.FileInfo]$File, [bool]$UnProtect, [string]$OutFile) {
+        [Base85]::Decode($File, [securestring]$(if ($UnProtect) { [AesGCM]::GetPassword() }else { [securestring]::new() }), $OutFile)
+    }
+    static [void] Decode([IO.FileInfo]$File, [securestring]$Password, [string]$OutFile) {
+        [ValidateNotNullOrEmpty()][string]$OutFile = [CryptoBase]::GetUnResolvedPath($OutFile);
+        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = [CryptoBase]::GetResolvedPath($File.FullName);
+        [byte[]]$ba = [IO.FILE]::ReadAllBytes($File.FullName)
+        [byte[]]$da = [Base85]::Decode([EncodingBase]::new().GetString($ba))
+        [void][IO.FILE]::WriteAllBytes($OutFile, $da)
+        if (![string]::IsNullOrWhiteSpace([xconvert]::ToString($Password))) { [AesGCM]::Decrypt([IO.FileInfo]::new($OutFile), $Password, $OutFile) }
+    }
 }
-
 #endregion Base85
 
 
@@ -1461,8 +1532,11 @@ class GitHub {
         if ($null -eq ([GitHub]::webSession)) {
             [GitHub]::webSession = [GitHub]::createSession($UserName, [GitHub]::secToken)
         }
-        $response = Invoke-RestMethod -Uri "https://api.github.com/gists/$gistId" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
-        return $response
+        if ([GitHub]::IsConnected()) {
+            return Invoke-RestMethod -Uri "https://api.github.com/gists/$gistId" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
+        } else {
+            throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!")
+        }
     }
     static [psobject] GetAllGists([string]$UserName) {
         if ($null -eq [GitHub]::secToken) { [GitHub]::createSession($UserName) }
@@ -1485,6 +1559,11 @@ class GitHub {
     static [PsObject] GetUserRepositories() {
         $response = Invoke-RestMethod -Uri 'https://api.github.com/user/repos' -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
+    }
+    static [bool] IsConnected() {
+        $cs = [bool](Test-Connection github.com -ErrorAction Ignore)
+        if (!$cs) { Write-Warning "[Github] Unable to connect" }
+        return $cs
     }
 }
 
@@ -3424,6 +3503,37 @@ class AesGCM : CryptoBase {
         }
         return $_bytes
     }
+    static [void] Encrypt([IO.FileInfo]$File) {
+        [AesGCM]::Encrypt($File, [AesGCM]::GetPassword());
+    }
+    static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password) {
+        [AesGCM]::Encrypt($File, $Password, $null);
+    }
+    static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath) {
+        [AesGCM]::Encrypt($File, $password, $OutPath, 1, $null);
+    }
+    static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath, [int]$iterations) {
+        [AesGCM]::Encrypt($File, $password, $OutPath, $iterations, $null);
+    }
+    static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath, [int]$iterations, [string]$Compression) {
+        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = [AesGCM]::GetResolvedPath($File.FullName); if ([string]::IsNullOrWhiteSpace($OutPath)) { $OutPath = $File.FullName }
+        [ValidateNotNullOrEmpty()][string]$OutPath = [AesGCM]::GetUnResolvedPath($OutPath);
+        if (![string]::IsNullOrWhiteSpace($Compression)) { [AesGCM]::ValidateCompression($Compression) }
+        $streamReader = [System.IO.FileStream]::new($File.FullName, [System.IO.FileMode]::Open)
+        $ba = [byte[]]::New($streamReader.Length);
+        [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
+        [void]$streamReader.Close();
+        Write-Verbose "[+] Begin file encryption:"
+        Write-Verbose "[-]  File    : $File"
+        Write-Verbose "[-]  OutFile : $OutPath"
+        [byte[]]$_salt = [AesGCM]::GetDerivedSalt($Password);
+        $encryptdbytes = [AesGCM]::Encrypt($ba, $Password, $_salt, $null, $Compression, $iterations)
+        $streamWriter = [System.IO.FileStream]::new($OutPath, [System.IO.FileMode]::OpenOrCreate);
+        [void]$streamWriter.Write($encryptdbytes, 0, $encryptdbytes.Length);
+        [void]$streamWriter.Close()
+        [void]$streamReader.Dispose()
+        [void]$streamWriter.Dispose()
+    }
     static [byte[]] Decrypt([byte[]]$bytes) {
         return [AesGCM]::Decrypt($bytes, [AesGCM]::GetPassword());
     }
@@ -3484,6 +3594,37 @@ class AesGCM : CryptoBase {
             Remove-Variable IV_SIZE, TAG_SIZE, th -ErrorAction SilentlyContinue
         }
         return $_bytes
+    }
+    static [void] Decrypt([IO.FileInfo]$File) {
+        [AesGCM]::Decrypt($File, [AesGCM]::GetPassword());
+    }
+    static [void] Decrypt([IO.FileInfo]$File, [securestring]$password) {
+        [AesGCM]::Decrypt($File, $password, $null);
+    }
+    static [void] Decrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath) {
+        [AesGCM]::Decrypt($File, $password, $OutPath, 1, $null);
+    }
+    static [void] Decrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath, [int]$iterations) {
+        [AesGCM]::Decrypt($File, $password, $OutPath, $iterations, $null);
+    }
+    static [void] Decrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath, [int]$iterations, [string]$Compression) {
+        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = [AesGCM]::GetResolvedPath($File.FullName); if ([string]::IsNullOrWhiteSpace($OutPath)) { $OutPath = $File.FullName }
+        [ValidateNotNullOrEmpty()][string]$OutPath = [AesGCM]::GetUnResolvedPath($OutPath);
+        if (![string]::IsNullOrWhiteSpace($Compression)) { [AesGCM]::ValidateCompression($Compression) }
+        $streamReader = [System.IO.FileStream]::new($File.FullName, [System.IO.FileMode]::Open)
+        $ba = [byte[]]::New($streamReader.Length);
+        [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
+        [void]$streamReader.Close();
+        Write-Verbose "[+] Begin file decryption:"
+        Write-Verbose "[-]  File    : $File"
+        Write-Verbose "[-]  OutFile : $OutPath"
+        [byte[]]$_salt = [AesGCM]::GetDerivedSalt($Password);
+        $decryptdbytes = [AesGCM]::Decrypt($ba, $Password, $_salt, $null, $Compression, $iterations)
+        $streamWriter = [System.IO.FileStream]::new($OutPath, [System.IO.FileMode]::OpenOrCreate);
+        [void]$streamWriter.Write($decryptdbytes, 0, $decryptdbytes.Length);
+        [void]$streamWriter.Close()
+        [void]$streamReader.Dispose()
+        [void]$streamWriter.Dispose()
     }
 }
 #endregion AesGCM
@@ -5359,145 +5500,12 @@ class CipherTron : CryptoBase {
     static [void] WriteBanner() {
         $bc = [CipherTron]::banners.Count
         if ($null -eq [CipherTron]::banners -or ($bc -eq 0)) {
-            [void][CipherTron]::banners.Add([Base85]::Decode([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([xconvert]::ToDeCompressed('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')))))
+            [void][CipherTron]::banners.Add([base85]::Decode([xconvert]::ToDeCompressed('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')));
+            [void][CipherTron]::banners.Add([base85]::Decode([xconvert]::ToDeCompressed('H4sIAAAAAAAAA41UTW+DMAy9I+VHIKrCpB526aH70Na12mWTKFvVbWpXJqAtGaxFHfv/SyABJyTA0bGfYz8/Gx9GfuRNH93o+c/1V/gwmq+pGXr725ujaO4qEwQjw7O3T2c3na/90s/NuAe68JIUWr+Uu4mm5iZChjY7b6SrTVJFla4Mf5hd/rBwC1/XmAW+/8XkbRUICJ4ihFzMJkfXu3B3Si5sx04lppChRtPPhrn5/fo1Pidtua9MygULT3j5wb5A0/Bz/0a0fsiklWCBqbexzEVc0ukMPnOpAP1kaXPIAN0qZqdG83oKr0YXNDvNnTcH/RFW6FjSBfybUJObYimxILLNFg51gadmUCta4kqXIuqnC+cus9o1J3AB/APnVHPVqthygwgXrVx1q4Y1oueKeN+z5lApU1aeFm/I6B4G7wZsGBu0yEVzA1uvDdheevjU6LiHqlq54I320Fyx7GJ4qSqwcNL5yEsEMzOb3wsuI5ErOgzJK6ALL+GCnxfxM+bXoMH+pch4CSfLk6hJdTg8JLBNcPgUjcpoKv/hP5EAUEL/BgAA')));
         }
         $bn = [CipherTron]::banners[(Get-Random (0..($bc-1)))]
-        [System.Text.Encoding]::UTF8.GetString($bn) | Write-Host -ForegroundColor Red
-        "[!] Let there be C4rn4g3 ..." | Write-Host -ForegroundColor Magenta
-    }
-    static [void] EncryptFile([string]$Path) {
-        [CipherTron]::EncryptFile($Path, [AesGCM]::GetPassword());
-    }
-    static [void] EncryptFile([string]$Path, [securestring]$Password) {
-        [CipherTron]::EncryptFile($Path, $Password, $null);
-    }
-    static [void] EncryptFile([string]$Path, [securestring]$Password, [string]$OutPath) {
-        [CipherTron]::EncryptFile($Path, $password, $OutPath, 1, $null);
-    }
-    static [void] EncryptFile([string]$Path, [securestring]$Password, [string]$OutPath, [int]$iterations) {
-        [CipherTron]::EncryptFile($Path, $password, $OutPath, $iterations, $null);
-    }
-    static [void] EncryptFile([string]$Path, [securestring]$Password, [string]$OutPath, [int]$iterations, [string]$Compression) {
-        [ValidateNotNullOrEmpty()][string]$Path = [CipherTron]::GetResolvedPath($Path); if ([string]::IsNullOrWhiteSpace($OutPath)) { $OutPath = $Path }
-        [ValidateNotNullOrEmpty()][string]$OutPath = [CipherTron]::GetUnResolvedPath($OutPath);
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [CipherTron]::ValidateCompression($Compression) }
-        $streamReader = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open)
-        $ba = [byte[]]::New($streamReader.Length);
-        [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
-        [void]$streamReader.Close();
-        Write-Verbose "[+] Begin file encryption:"
-        Write-Verbose "[-]  File    : $Path"
-        Write-Verbose "[-]  OutFile : $OutPath"
-        [byte[]]$_salt = [AesGCM]::GetDerivedSalt($Password);
-        $encryptdbytes = [AesGCM]::Encrypt($ba, $Password, $_salt, $null, $Compression, $iterations)
-        $streamWriter = [System.IO.FileStream]::new($OutPath, [System.IO.FileMode]::OpenOrCreate);
-        [void]$streamWriter.Write($encryptdbytes, 0, $encryptdbytes.Length);
-        [void]$streamWriter.Close()
-        [void]$streamReader.Dispose()
-        [void]$streamWriter.Dispose()
-    }
-    static [void] DecryptFile([string]$Path) {
-        [CipherTron]::DecryptFile($Path, [AesGCM]::GetPassword());
-    }
-    static [void] DecryptFile([string]$Path, [securestring]$password) {
-        [CipherTron]::DecryptFile($Path, $password, $null);
-    }
-    static [void] DecryptFile([string]$Path, [securestring]$Password, [string]$OutPath) {
-        [CipherTron]::DecryptFile($Path, $password, $OutPath, 1, $null);
-    }
-    static [void] DecryptFile([string]$Path, [securestring]$Password, [string]$OutPath, [int]$iterations) {
-        [CipherTron]::DecryptFile($Path, $password, $OutPath, $iterations, $null);
-    }
-    static [void] DecryptFile([string]$Path, [securestring]$Password, [string]$OutPath, [int]$iterations, [string]$Compression) {
-        [ValidateNotNullOrEmpty()][string]$Path = [CipherTron]::GetResolvedPath($Path); if ([string]::IsNullOrWhiteSpace($OutPath)) { $OutPath = $Path }
-        [ValidateNotNullOrEmpty()][string]$OutPath = [CipherTron]::GetUnResolvedPath($OutPath);
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [CipherTron]::ValidateCompression($Compression) }
-        $streamReader = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open)
-        $ba = [byte[]]::New($streamReader.Length);
-        [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
-        [void]$streamReader.Close();
-        Write-Verbose "[+] Begin file decryption:"
-        Write-Verbose "[-]  File    : $Path"
-        Write-Verbose "[-]  OutFile : $OutPath"
-        [byte[]]$_salt = [AesGCM]::GetDerivedSalt($Password);
-        $decryptdbytes = [AesGCM]::Decrypt($ba, $Password, $_salt, $null, $Compression, $iterations)
-        $streamWriter = [System.IO.FileStream]::new($OutPath, [System.IO.FileMode]::OpenOrCreate);
-        [void]$streamWriter.Write($decryptdbytes, 0, $decryptdbytes.Length);
-        [void]$streamWriter.Close()
-        [void]$streamReader.Dispose()
-        [void]$streamWriter.Dispose()
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url) {
-        # No $outFile so we create ones ourselves, and use suffix to prevent duplicaltes
-        $randomSuffix = [Guid]::NewGuid().Guid.subString(15).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1)))
-        return [CipherTron]::DownloadFile($url, "$(Split-Path $url.AbsolutePath -Leaf)_$randomSuffix");
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile) {
-        $outFile = [CipherTron]::GetUnResolvedPath($outFile);
-        if ([System.IO.Directory]::Exists($outFile)) {
-            throw [InvalidArgumentException]::new("outFile", "Please provide valid file path")
-        }
-        if ([IO.File]::Exists($outFile)) { Remove-Item $outFile -Force }
-        $stream = $null; $fileStream = $null; $name = Split-Path $url -Leaf;
-        $request = [System.Net.HttpWebRequest]::Create($url)
-        $request.UserAgent = "Mozilla/5.0"
-        $response = $request.GetResponse()
-        $contentLength = $response.ContentLength
-        $stream = $response.GetResponseStream()
-        $buffer = New-Object byte[] 1024
-        $fileStream = [System.IO.FileStream]::new($outFile, [System.IO.FileMode]::CreateNew)
-        $totalBytesReceived = 0
-        $totalBytesToReceive = $contentLength
-        while ($totalBytesToReceive -gt 0) {
-            $bytesRead = $stream.Read($buffer, 0, 1024)
-            $totalBytesReceived += $bytesRead
-            $totalBytesToReceive -= $bytesRead
-            $fileStream.Write($buffer, 0, $bytesRead)
-            $percentComplete = [int]($totalBytesReceived / $contentLength * 100)
-            Write-Progress -Activity "Downloading $name to $Outfile" -Status "Progress: $percentComplete%" -PercentComplete $percentComplete
-        }
-        try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
-        return (Get-Item $outFile)
-    }
-    static [void] Encode([string]$FilePath) {
-        [CipherTron]::Encode($FilePath, $false, $FilePath);
-    }
-    static [void] Encode([string]$FilePath, [bool]$Protect) {
-        [CipherTron]::Encode($FilePath, $Protect, $FilePath);
-    }
-    static [void] Encode([string]$FilePath, [bool]$Protect, [string]$OutFile) {
-        [CipherTron]::Encode($FilePath, [securestring]$(if ($Protect) { [AesGCM]::GetPassword() }else { [securestring]::new() }), $OutFile)
-    }
-    static [void] Encode([string]$FilePath, [securestring]$Password, [string]$OutFile) {
-        [ValidateNotNullOrEmpty()][string]$FilePath = [CipherTron]::GetResolvedPath($FilePath);
-        [ValidateNotNullOrEmpty()][string]$OutFile = [CipherTron]::GetUnResolvedPath($OutFile);
-        if (![string]::IsNullOrWhiteSpace([xconvert]::ToString($Password))) { [CipherTron]::EncryptFile($FilePath, $Password, $FilePath) };
-        $streamReader = [System.IO.FileStream]::new($FilePath, [System.IO.FileMode]::Open)
-        $ba = [byte[]]::New($streamReader.Length);
-        [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
-        [void]$streamReader.Close();
-        $encodedString = [Base85]::Encode($ba)
-        $encodedBytes = [EncodingBase]::new().GetBytes($encodedString);
-        $streamWriter = [System.IO.FileStream]::new($OutFile, [System.IO.FileMode]::OpenOrCreate);
-        [void]$streamWriter.Write($encodedBytes, 0, $encodedBytes.Length);
-        [void]$streamWriter.Close()
-    }
-    static [void] Decode([string]$FilePath) {
-        [CipherTron]::Decode($FilePath, $false, $FilePath);
-    }
-    static [void] Decode([string]$FilePath, [bool]$UnProtect) {
-        [CipherTron]::Decode($FilePath, $UnProtect, $FilePath);
-    }
-    static [void] Decode([string]$FilePath, [bool]$UnProtect, [string]$OutFile) {
-        [CipherTron]::Decode($FilePath, [securestring]$(if ($UnProtect) { [AesGCM]::GetPassword() }else { [securestring]::new() }), $OutFile)
-    }
-    static [void] Decode([string]$FilePath, [securestring]$Password, [string]$OutFile) {
-        [ValidateNotNullOrEmpty()][string]$FilePath = [CipherTron]::GetResolvedPath($FilePath);
-        [ValidateNotNullOrEmpty()][string]$OutFile = [CipherTron]::GetUnResolvedPath($OutFile);
-        [byte[]]$ba = [IO.FILE]::ReadAllBytes($FilePath)
-        [byte[]]$da = [Base85]::Decode([EncodingBase]::new().GetString($ba))
-        [void][IO.FILE]::WriteAllBytes($OutFile, $da)
-        if (![string]::IsNullOrWhiteSpace([xconvert]::ToString($Password))) { [CipherTron]::DecryptFile($OutFile, $Password, $OutFile) }
+        [System.Text.Encoding]::UTF8.GetString($bn) | Write-Host -ForegroundColor Green
+        [void][cli]::Write("            Making Cryptography Easy and Fun", [System.ConsoleColor]::Green, $true, $false)
     }
     [void] Chat() {
         try {
