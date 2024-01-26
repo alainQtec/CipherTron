@@ -1,6 +1,6 @@
 ﻿@{
     ModuleName    = 'CipherTron'
-    ModuleVersion = [System.Management.Automation.SemanticVersion]::new(0, 1, 0)
+    ModuleVersion = [version]::new(0, 1, 0)
     ReleaseNotes  = @"
 `n`n***`n`n# Install guide:`n`n
 1. [Click here](https://github.com/alainQtec/CipherTron/releases/download/v<versionToDeploy>/CipherTron.zip) to download the *CipherTron.zip* file attached to the release.
