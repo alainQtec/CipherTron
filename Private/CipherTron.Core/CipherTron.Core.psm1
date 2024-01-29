@@ -5819,7 +5819,7 @@ $prompt
             [IO.File]::WriteAllText($ConfigFile, (ConvertTo-Json $defaultConfig), [System.Text.Encoding]::UTF8)
             Write-Verbose "Created New ConfigFile: $ConfigFile"
         }
-        $this.Config.LoadJson($ConfigFile)
+        $this.Config.Import($ConfigFile)
         if ($null -ne $this.Config.GistUri) { $this.SetRemote([uri]::New($this.Config.GistUri), $this.Config.FileName) }
         #+++ Set commands and their aliases:
         # param([CipherTron]$bot)
@@ -6785,17 +6785,6 @@ class Config {
     [void] Set([System.Collections.Specialized.OrderedDictionary]$dict) {
         $dict.Keys.Foreach({ $this.Set($_, $dict["$_"]) });
     }
-    [void] LoadJson([string]$FilePath) {
-        $this.LoadJson($FilePath, [System.Text.Encoding]::UTF8)
-    }
-    [void] LoadJson([string]$FilePath, [System.Text.Encoding]$Encoding) {
-        [ValidateNotNullOrEmpty()][string]$FilePath = $FilePath
-        [ValidateNotNullOrEmpty()][System.Text.Encoding]$Encoding = $Encoding
-        $ob = ConvertFrom-Json -InputObject $([IO.File]::ReadAllText($FilePath, $Encoding))
-        $ob | Get-Member -Type NoteProperty | Select-Object Name | ForEach-Object {
-            $key = $_.Name; $val = $ob.$key; $this.Set($key, $val);
-        }
-    }
     [bool] Contains([string]$Name) {
         [ValidateNotNullOrEmpty()][string]$Name = $Name
         return (($this | Get-Member -Type NoteProperty | Select-Object -ExpandProperty name) -contains "$Name")
@@ -6820,14 +6809,26 @@ class Config {
         $l = [GitHub]::ParseGistUri($GistUri)
         $this.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files.$fileName.raw_url)
     }
-    [PsObject] Read() {
-        return [Config]::Read($this.File.FullName, [AesGCM]::GetPassword(), [string]::Empty)
+    [void] Import() {
+        $this.Import($this.File.FullName)
     }
-    static [PsObject] Read([String]$Path, [securestring]$password, [string]$Compression) {
-        [ValidateNotNullOrEmpty()][string]$Path = [AesGCM]::GetResolvedPath($Path)
+    [void] Import([string]$FilePath) {
+        $this.Import($FilePath, [System.Text.Encoding]::UTF8)
+    }
+    [void] Import([string]$FilePath, [System.Text.Encoding]$Encoding) {
+        [void][Config]::Import($FilePath, [AesGCM]::GetPassword(), [string]::Empty, $Encoding)
+    }
+    static [PsObject] Import([String]$FilePath, [securestring]$password, [string]$Compression, [System.Text.Encoding]$Encoding) {
+        [ValidateNotNullOrEmpty()][System.Text.Encoding]$Encoding = $Encoding
+        [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetResolvedPath($FilePath)
         if (![string]::IsNullOrWhiteSpace($Compression)) { [AesGCM]::ValidateCompression($Compression) }
-        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
-        return ConvertFrom-Csv -InputObject ([System.Text.Encoding]::UTF8.GetString($da))
+        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.File]::ReadAllText($FilePath, $Encoding)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
+        # JSON FORMATTED CONFIG FILE By default
+        $ob = ConvertFrom-Json -InputObject ([System.Text.Encoding]::UTF8.GetString($da))
+        # $ob | Get-Member -Type NoteProperty | Select-Object Name | ForEach-Object {
+        #     $key = $_.Name; $val = $ob.$key; $this.Set($key, $val);
+        # }
+        return $ob
     }
 
     [string] ToString() {
