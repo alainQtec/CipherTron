@@ -559,7 +559,7 @@ class CryptoBase {
 #endregion CryptoBase
 
 #region    Custom_ObjectConverter
-class XConvert {
+class XConvert : System.ComponentModel.TypeConverter {
     XConvert() {}
     static [string] Tostring([k3Y]$K3Y) {
         if ($null -eq $K3Y) { return [string]::Empty };
@@ -934,66 +934,13 @@ class XConvert {
         }
         return $OutputObject
     }
-    static [string] ToProtected([string]$string) {
-        $Scope = [EncryptionScope]::User
-        $Entropy = [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())[0..15];
-        return [xconvert]::Tostring([xconvert]::ToProtected([System.Text.Encoding]::UTF8.GetBytes($string), $Entropy, $Scope))
-    }
-    static [string] ToProtected([string]$string, [EncryptionScope]$Scope) {
-        $Entropy = [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())[0..15];
-        return [xconvert]::Tostring([xconvert]::ToProtected([System.Text.Encoding]::UTF8.GetBytes($string), $Entropy, $Scope))
-    }
-    static [string] ToProtected([string]$string, [byte[]]$Entropy, [EncryptionScope]$Scope) {
-        return [xconvert]::Tostring([xconvert]::ToProtected([System.Text.Encoding]::UTF8.GetBytes($string), $Entropy, $Scope))
-    }
     static [byte[]] ToProtected([byte[]]$Bytes) {
-        $Scope = [EncryptionScope]::User
-        $Entropy = [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())[0..15];
-        return [xconvert]::ToProtected($bytes, $Entropy, $Scope)
+        $p = [XConvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
+        return [AesGCM]::Encrypt($Bytes, $p, [CryptoBase]::GetDerivedSalt($p))
     }
-    static [byte[]] ToProtected([byte[]]$Bytes, [EncryptionScope]$Scope) {
-        $Entropy = [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())[0..15];
-        return [xconvert]::ToProtected($bytes, $Entropy, $Scope)
-    }
-    static [byte[]] ToProtected([byte[]]$Bytes, [byte[]]$Entropy, [EncryptionScope]$Scope) {
-        $encryptedData = $null; # Uses the Windows Data Protection API (DPAPI) https://docs.microsoft.com/en-us/dotnet/api/System.Security.Cryptography.ProtectedData.Protect?
-        try {
-            if (!("System.Security.Cryptography.ProtectedData" -is 'Type')) { Add-Type -AssemblyName System.Security }
-            $bytes64str = $null; Set-Variable -Name bytes64str -Scope Local -Visibility Private -Option Private -Value ([convert]::ToBase64String($Bytes))
-            $Entropy64str = $null; Set-Variable -Name Entropy64str -Scope Local -Visibility Private -Option Private -Value ([convert]::ToBase64String($Entropy))
-            Set-Variable -Name encryptedData -Scope Local -Visibility Private -Option Private -Value $(& ([scriptblock]::Create("[System.Security.Cryptography.ProtectedData]::Protect([convert]::FromBase64String('$bytes64str'), [convert]::FromBase64String('$Entropy64str'), [System.Security.Cryptography.DataProtectionScope]::$($Scope.ToString()))")));
-        } catch [System.Security.Cryptography.CryptographicException] {
-            throw [System.Security.Cryptography.CryptographicException]::new("Data was not encrypted. An error occurred!`n $($_.Exception.Message)");
-        } catch {
-            throw $_
-        }
-        return $encryptedData
-    }
-    static [string] ToUnProtected([string]$string) {
-        $Scope = [EncryptionScope]::User
-        $Entropy = [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())[0..15];
-        return [System.Text.Encoding]::UTF8.GetString([XConvert]::ToUnProtected([System.Text.Encoding]::UTF8.GetBytes($string), $Entropy, $Scope))
-    }
-    static [string] ToUnProtected([string]$string, [EncryptionScope]$Scope) {
-        $Entropy = [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())[0..15];
-        return [System.Text.Encoding]::UTF8.GetString([XConvert]::ToUnProtected([System.Text.Encoding]::UTF8.GetBytes($string), $Entropy, $Scope))
-    }
-    static [string] ToUnProtected([string]$string, [byte[]]$Entropy, [EncryptionScope]$Scope) {
-        return [System.Text.Encoding]::UTF8.GetString([XConvert]::ToUnProtected([System.Text.Encoding]::UTF8.GetBytes($string), $Entropy, $Scope))
-    }
-    static [byte[]] ToUnProtected([byte[]]$Bytes, [byte[]]$Entropy, [EncryptionScope]$Scope) {
-        $decryptedData = $null;
-        try {
-            if (!("System.Security.Cryptography.ProtectedData" -is 'Type')) { Add-Type -AssemblyName System.Security }
-            $bytes64str = $null; Set-Variable -Name bytes64str -Scope Local -Visibility Private -Option Private -Value ([convert]::ToBase64String($Bytes))
-            $Entropy64str = $null; Set-Variable -Name Entropy64str -Scope Local -Visibility Private -Option Private -Value ([convert]::ToBase64String($Entropy))
-            Set-Variable -Name decryptedData -Scope Local -Visibility Private -Option Private -Value $(& ([scriptblock]::Create("[System.Security.Cryptography.ProtectedData]::Unprotect([convert]::FromBase64String('$bytes64str'), [convert]::FromBase64String('$Entropy64str'), [System.Security.Cryptography.DataProtectionScope]::$($Scope.ToString()))")));
-        } catch [System.Security.Cryptography.CryptographicException] {
-            throw [System.Security.Cryptography.CryptographicException]::new("Data was not decrypted. An error occurred!`n $($_.Exception.Message)");
-        } catch {
-            throw $_
-        }
-        return $decryptedData
+    static [byte[]] ToUnProtected([byte[]]$Bytes) {
+        $p = [XConvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
+        return [AesGCM]::Decrypt($Bytes, $p, [CryptoBase]::GetDerivedSalt($p))
     }
     static [byte[]] ToCompressed([byte[]]$Bytes) {
         return [xconvert]::ToCompressed($Bytes, 'Gzip');
@@ -1511,9 +1458,8 @@ class GitHub {
     static [Microsoft.PowerShell.Commands.WebRequestSession] $webSession
 
     static [Microsoft.PowerShell.Commands.WebRequestSession] createSession([string]$UserName) {
-        Write-Host "[GitHub] Input password to decrypt your token:" -ForegroundColor Green
-        [GitHub]::secToken = [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([Convert]::FromBase64String('4YBR+PvDUZtkgPnP5QsruCeTa32nvWwnItPxrOY1KuQ3tWKACKANByEbH/lNfG9WZpc4p9zjPBScv+8tfrg51hR5g7k='))))
-        return [GitHub]::createSession($UserName, [GitHub]::secToken)
+        [GitHub]::SetSecToken()
+        return [GitHub]::createSession($UserName, [GitHub]::GetSecToken())
     }
     static [Microsoft.PowerShell.Commands.WebRequestSession] createSession([string]$GitHubUserName, [securestring]$clientSecret) {
         $GithubToken = [xconvert]::ToString([securestring]$clientSecret)
@@ -1524,23 +1470,46 @@ class GitHub {
         [GitHub]::webSession = $web_session
         return $web_session
     }
-    static [PsObject] GetUserInformation([string]$UserName) {
+    static [void] SetSecToken() {
+        $t = Read-Host -Prompt "your api token" -MaskInput
+        $p = Read-Host -Prompt "Password" -AsSecureString
+        [GitHub]::SetSecToken($t, $p)
+    }
+    static [void] SetSecToken([string]$token, [securestring]$password) {
+        [GitHub]::secToken = [convert]::ToBase64String([AesGCM]::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token)))
+    }
+    static [securestring] GetSecToken() {
+        Write-Host "[GitHub] Input password to decrypt your token:" -ForegroundColor Green
+        return [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([Convert]::FromBase64String('4YBR+PvDUZtkgPnP5QsruCeTa32nvWwnItPxrOY1KuQ3tWKACKANByEbH/lNfG9WZpc4p9zjPBScv+8tfrg51hR5g7k='))))
+    }
+    static [PsObject] GetUserInfo([string]$UserName) {
         $response = Invoke-RestMethod -Uri "https://api.github.com/user/$UserName" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
     }
-    static [PsObject] GetGist([string]$UserName, [string]$gistId) {
-        if ($null -eq ([GitHub]::webSession)) {
-            [GitHub]::webSession = [GitHub]::createSession($UserName, [GitHub]::secToken)
-        }
-        if ([GitHub]::IsConnected()) {
-            return Invoke-RestMethod -Uri "https://api.github.com/gists/$gistId" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
-        } else {
-            throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!")
-        }
+    static [PsObject] GetGist([uri]$Uri) {
+        $l = [GitHub]::ParseGistUri($Uri)
+        return [GitHub]::GetGist($l.UserName, $l.GistId)
     }
-    static [psobject] GetAllGists([string]$UserName) {
-        if ($null -eq [GitHub]::secToken) { [GitHub]::createSession($UserName) }
-        return (Get-Gists -UserName $UserName -SecureToken ([GitHub]::secToken))
+    static [PsObject] GetGist([string]$UserName, [string]$GistId) {
+        $t = [GitHub]::GetSecToken()
+        if ($null -eq ([GitHub]::webSession)) {
+            [GitHub]::webSession = $(if ($null -eq $t) {
+                    [GitHub]::createSession($UserName)
+                } else {
+                    [GitHub]::createSession($UserName, $t)
+                }
+            )
+        }
+        if (![GitHub]::IsConnected()) {
+            throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
+        }
+        if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
+            return Get-Gists -UserName $UserName -SecureToken $t
+        }
+        return Invoke-RestMethod -Uri "https://api.github.com/gists/$GistId" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
+    }
+    Static [string] GetGistContent([string]$FileName, [uri]$GistUri) {
+        return [GitHub]::GetGist($GistUri).files.$FileName.content
     }
     static [PsObject] CreateGist([string]$description, [array]$files) {
         $url = 'https://api.github.com/gists'
@@ -1555,6 +1524,12 @@ class GitHub {
         }
         $response = Invoke-RestMethod -Uri $url -WebSession ([GitHub]::webSession) -Method Post -Body ($body | ConvertTo-Json) -Verbose:$false
         return $response
+    }
+    static [PsCustomObject] ParseGistUri([uri]$GistUri) {
+        return [PsCustomObject]@{
+            UserName = $GistUri.Segments[1].Split('/')[0]
+            GistId   = $GistUri.Segments[-1]
+        }
     }
     static [PsObject] GetUserRepositories() {
         $response = Invoke-RestMethod -Uri 'https://api.github.com/user/repos' -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
@@ -5451,52 +5426,42 @@ class Decryptor {
 #
 #   $bot.ChatLog.ToString()
 class CipherTron : CryptoBase {
+    [ValidateNotNullOrEmpty()][Config] $Config
     [ValidateNotNullOrEmpty()][version] $Version
-    [ValidateNotNullOrEmpty()][CfgList] $Config
     [ValidateNotNullOrEmpty()][chatPresets] $Presets
     [ValidateNotNullOrEmpty()][ChatSession] $ChatSession
     static hidden [ValidateNotNull()][chatTmp] $Tmp
-    static [ValidateNotNullOrEmpty()][uri] $records_url
-    static [bool] $useverbose = $verbosePreference -eq "continue"
+    static hidden [ValidateNotNullOrEmpty()][uri] $ConfigUri
+    static hidden [bool] $useverbose = $verbosePreference -eq "continue"
     static [System.Collections.ObjectModel.Collection[Byte[]]] $banners = @()
 
     CipherTron() {
         $this.Version = [CipherTron]::GetVersion()
-        $this.Presets = [chatPresets]::new(); $this::Tmp = [chatTmp]::new(); $this.ChatSession = [ChatSession]::new();
-        $this.PsObject.properties.add([psscriptproperty]::new('records', [scriptblock]::Create({ return [IO.FileInfo]::new([CipherTron]::GetUnResolvedPath([IO.Path]::Combine([CipherTron]::Get_dataPath(), "records"))) })))
-        $this.PsObject.properties.add([psscriptproperty]::new('ConfigPath', [scriptblock]::Create({ return [CipherTron]::Get_Config_Path() })))
+        $this.Presets = [chatPresets]::new(); $this::Tmp = [chatTmp]::new();
+        $this.ChatSession = [ChatSession]::new(); $this.SetConfigs();
+        $this.PsObject.properties.add([psscriptproperty]::new('ConfigPath', [scriptblock]::Create({ return [CipherTron]::Get_Config_Path($this.Config.FileName) })))
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ return [CipherTron]::Get_dataPath() })))
         $this.PsObject.properties.add([psscriptproperty]::new('User', [scriptblock]::Create({ return $this.ChatSession.User })))
         $this.PsObject.properties.add([psscriptproperty]::new('ChatUid', [scriptblock]::Create({ return $this.ChatSession.ChatUid.ToString() })))
         $this.PsObject.properties.add([psscriptproperty]::new('ChatLog', [scriptblock]::Create({ return $this.ChatSession.ChatLog })))
         $this.PsObject.properties.add([psscriptproperty]::new('Sessions', [scriptblock]::Create({ return @(Get-ChildItem ([ChatSessionManager]::GetSessionFolder()) -Filter "*.chat" | ForEach-Object { [ChatSession]::New($_.FullName) }) })))
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return [ChatSessionManager]::IsOffline() })))
-        $this.SetConfigs(); $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle = "Ciphertron"
     }
 
     [void] ShowMenu() {
-        if ($null -eq [CipherTron]::records_url) {
-            if ([CipherTron]::useverbose) { "[+] Get records_url ..." | Write-Host -ForegroundColor Magenta }
+        if ($null -eq [CipherTron]::ConfigUri) {
+            if ([CipherTron]::useverbose) { "[+] Get ConfigUri ..." | Write-Host -ForegroundColor Magenta }
             # for now just use this file for multiple encryption POC
-            [CipherTron]::records_url = [uri]::new([GitHub]::GetGist('alainQtec', '0710a1d4a833c3b618136e5ea98ca0b2').files.secret_Info.raw_url)
+            if ($null -eq $this.Config) { $this.SetConfigs() }
+            [CipherTron]::ConfigUri = $this.Config.Remote
         }
-        if (![IO.File]::Exists($this.records.FullName)) {
-            if ([CipherTron]::useverbose) { "[+] Download records .." | Write-Host -ForegroundColor Magenta }
-            [CipherTron]::DownloadFile([CipherTron]::records_url, $this.records.FullName)
+        if (![IO.File]::Exists($this.Config.File.FullName)) {
+            if ([CipherTron]::useverbose) { "[+] Get your latest configs .." | Write-Host -ForegroundColor Magenta }
+            [CipherTron]::DownloadFile([CipherTron]::ConfigUri, $this.Config.File.FullName)
         }
         [CipherTron]::WriteBanner()
         # code for menu goes here ...
     }
-    [PsObject] ReadRecords() {
-        return [CipherTron]::ReadRecords($this.records.FullName, [AesGCM]::GetPassword(), [string]::Empty)
-    }
-    [PsObject] ReadRecords([String]$Path, [securestring]$password, [string]$Compression) {
-        [ValidateNotNullOrEmpty()][string]$Path = [CipherTron]::GetResolvedPath($Path)
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [CipherTron]::ValidateCompression($Compression) }
-        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
-        return ConvertFrom-Csv -InputObject ([System.Text.Encoding]::UTF8.GetString($da))
-    }
-
     static [void] WriteBanner() {
         $bc = [CipherTron]::banners.Count
         if ($null -eq [CipherTron]::banners -or ($bc -eq 0)) {
@@ -5509,6 +5474,7 @@ class CipherTron : CryptoBase {
     }
     [void] Chat() {
         try {
+            $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle = "Ciphertron";
             # $authenticated = $false
             # while (-not $authenticated) {
             #     $username = $this.Presets.Prompt("Please enter your username:")
@@ -5836,13 +5802,14 @@ $prompt
         if (!$snFile.Exists) { throw [System.InvalidOperationException]::new("Failed to load chatsession with Id: '$Uid'", [System.IO.FileNotFoundException]::new('Unable to find the specified file.', $snFile.BaseName)) }
         $this.ChatSession = [ChatSession]::new($snFile)
     }
-    [void] SetConfigs() { $this.SetConfigs([CipherTron]::Get_Config_Path(), $false) }
+    [void] SetConfigs() { $this.SetConfigs([string]::Empty, $false) }
     [void] SetConfigs([string]$ConfigFile) { $this.SetConfigs($ConfigFile, $true) }
-    [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([CipherTron]::Get_Config_Path(), $throwOnFailure) }
+    [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
         $defaultConfig = $this.Get_default_Config()
-        if ($null -eq $this.Config) {
-            $this.Config = [CfgList]::new($defaultConfig)
+        if ($null -eq $this.Config) { $this.Config = [Config]::new($defaultConfig) }
+        if ([string]::IsNullOrWhiteSpace($ConfigFile)) {
+            $ConfigFile = [IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $this.Config.FileName)
         }
         if (![IO.File]::Exists($ConfigFile)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
@@ -5853,6 +5820,7 @@ $prompt
             Write-Verbose "Created New ConfigFile: $ConfigFile"
         }
         $this.Config.LoadJson($ConfigFile)
+        if ($null -ne $this.Config.GistUri) { $this.SetRemote([uri]::New($this.Config.GistUri), $this.Config.FileName) }
         #+++ Set commands and their aliases:
         # param([CipherTron]$bot)
         $Commands = [Ordered]@{
@@ -5914,6 +5882,8 @@ $prompt
     }
     hidden [hashtable] Get_default_Config() {
         $defaultConfig = @{
+            FileName      = 'BotConfig.json'
+            GistUri       = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
             emojis        = @{ #ie: Use emojis as preffix to indicate messsage source.
                 Bot  = '🤖 : '
                 user = '{0} : ' -f ($this.ChatSession.User.preferences.Avatar_Emoji)
@@ -5956,10 +5926,10 @@ $prompt
         return $defaultConfig
     }
     [void] EditConfig() {
-        $config_file = [CipherTron]::Get_Config_Path()
         if ($null -eq $this.Config) {
-            throw 'run Start-Ciphertron first'
+            throw 'Start Ciphertron first'
         }
+        $config_file = $this.Get_Config_Path()
         if (![IO.File]::Exists($config_file)) {
             New-Item -Type File -Path $config_file
             #Export current config to the file
@@ -5970,8 +5940,11 @@ $prompt
     static [string] Get_dataPath() {
         return [CipherTron]::Get_dataPath('CipherTron', ([ChatLog]::new().Recvr + '_Chat').Trim()).FullName
     }
-    static [string] Get_Config_Path() {
-        return [IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), 'BotConfig.json')
+    [string] Get_Config_Path() {
+        return [CipherTron]::Get_Config_Path($this.Config.FileName)
+    }
+    static [string] Get_Config_Path([string]$FileName) {
+        return [IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $FileName)
     }
     static hidden [void] Complete([ref]$line, [ref]$cursor) {
         # Used for a code completion Shortcut
@@ -6370,14 +6343,14 @@ class ChatLog : System.Runtime.Serialization.ISerializable {
     }
 }
 class chatTmp {
-    [ValidateNotNull()][CfgList]$vars
+    [ValidateNotNull()][Config]$vars
     [ValidateNotNull()][System.Collections.Generic.List[string]]$Paths
     chatTmp() {
-        $this.vars = [CfgList]::new()
+        $this.vars = [Config]::new()
         $this.Paths = [System.Collections.Generic.List[string]]::new()
     }
     [void] Clear() {
-        $this.vars = [CfgList]::new()
+        $this.vars = [Config]::new()
         $this.Paths | ForEach-Object { Remove-Item "$_" -ErrorAction SilentlyContinue }; $this.Paths = [System.Collections.Generic.List[string]]::new()
     }
 }
@@ -6762,12 +6735,14 @@ class CommandLineParser {
     }
 }
 
-class CfgList {
-    CfgList() {
+class Config {
+    [ValidateNotNullOrEmpty()][uri] $Remote # usually a gist uri
+    [ValidateNotNullOrEmpty()][IO.FileInfo] $File
+    Config() {
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
         $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
     }
-    CfgList([hashtable[]]$array) {
+    Config([hashtable[]]$array) {
         $this.Add($array)
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
         $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
@@ -6777,7 +6752,7 @@ class CfgList {
         if (!$this.Contains($key)) {
             $htab = [hashtable]::new(); $htab.Add($key, $value); $this.Add($htab)
         } else {
-            Write-Warning "CfgList.Add() Skipped $Key. Key already exists."
+            Write-Warning "Config.Add() Skipped $Key. Key already exists."
         }
     }
     [void] Add([hashtable]$table) {
@@ -6841,6 +6816,20 @@ class CfgList {
         }
         return $dict
     }
+    [void] SetRemote([uri]$GistUri, [string]$fileName) {
+        $l = [GitHub]::ParseGistUri($GistUri)
+        $this.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files.$fileName.raw_url)
+    }
+    [PsObject] Read() {
+        return [Config]::Read($this.File.FullName, [AesGCM]::GetPassword(), [string]::Empty)
+    }
+    static [PsObject] Read([String]$Path, [securestring]$password, [string]$Compression) {
+        [ValidateNotNullOrEmpty()][string]$Path = [AesGCM]::GetResolvedPath($Path)
+        if (![string]::IsNullOrWhiteSpace($Compression)) { [AesGCM]::ValidateCompression($Compression) }
+        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
+        return ConvertFrom-Csv -InputObject ([System.Text.Encoding]::UTF8.GetString($da))
+    }
+
     [string] ToString() {
         $r = $this.ToArray(); $s = ''
         $shortnr = [scriptblock]::Create({
@@ -6867,7 +6856,7 @@ class CfgList {
 }
 class User : System.Runtime.Serialization.ISerializable {
     [string]$Name
-    [ValidateNotNull()][CfgList]$preferences
+    [ValidateNotNull()][Config]$preferences
     hidden [ValidateNotNull()][string]$PublicKey
     hidden [ValidateNotNull()][securestring]$Password
     hidden [ValidateNotNull()][string]$PrivateKeyHash
@@ -6878,7 +6867,7 @@ class User : System.Runtime.Serialization.ISerializable {
             Quick_Exit   = $false
             Avatar_Emoji = '🗿'
         }
-        $this.preferences = [CfgList]::new($default_Preferences)
+        $this.preferences = [Config]::new($default_Preferences)
     }
     User([string]$name, [string]$passw0rd, [string]$publicKey, [securestring]$privateKey) {
         $this.Name = $name
@@ -6889,13 +6878,13 @@ class User : System.Runtime.Serialization.ISerializable {
             Quick_Exit   = $false
             Avatar_Emoji = '🗿'
         }
-        $this.preferences = [CfgList]::new($default_Preferences)
+        $this.preferences = [Config]::new($default_Preferences)
     }
     User([System.Runtime.Serialization.SerializationInfo]$Info, [System.Runtime.Serialization.StreamingContext]$Context) {
         $this.Name = $Info.GetValue('Name', [string])
         $this.Password = $Info.GetValue('Password', [securestring])
         $this.PublicKey = $Info.GetValue('PublicKey', [string])
-        $this.preferences = $Info.GetValue('preferences', [CfgList])
+        $this.preferences = $Info.GetValue('preferences', [Config])
         $this.PrivateKeyHash = $Info.GetValue('PrivateKeyHash', [string])
     }
     [void] GetObjectData([System.Runtime.Serialization.SerializationInfo]$Info, [System.Runtime.Serialization.StreamingContext]$Context) {
@@ -7088,11 +7077,9 @@ function Edit-CiphertronConfig {
                 This gives same result as [Option 1]
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
-    param ()
+    param ([string]$Config)
 
-    begin {
-        $Config = [CipherTron]::Get_Config_Path()
-    }
+    begin {}
 
     process {
         if ($PSCmdlet.ShouldProcess("Editing $Config", '', '')) {
