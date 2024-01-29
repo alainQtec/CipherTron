@@ -1454,33 +1454,38 @@ class Base85 : EncodingBase {
 
 #region    GitHub
 class GitHub {
-    static hidden [securestring] $secToken
+    static [string] $TokenFile
     static [Microsoft.PowerShell.Commands.WebRequestSession] $webSession
 
     static [Microsoft.PowerShell.Commands.WebRequestSession] createSession([string]$UserName) {
-        [GitHub]::SetSecToken()
-        return [GitHub]::createSession($UserName, [GitHub]::GetSecToken())
+        [GitHub]::SetToken()
+        return [GitHub]::createSession($UserName, [GitHub]::GetToken())
     }
     static [Microsoft.PowerShell.Commands.WebRequestSession] createSession([string]$GitHubUserName, [securestring]$clientSecret) {
         $GithubToken = [xconvert]::ToString([securestring]$clientSecret)
-        $encodedAuth = [Convert]::ToBase64String([System.Text.Encoding]::utf8.GetBytes("$($GitHubUserName):$($GithubToken)"))
+        $encodedAuth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("$($GitHubUserName):$($GithubToken)"))
         $web_session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
         [void]$web_session.Headers.Add('Authorization', "Basic $($encodedAuth)")
         [void]$web_session.Headers.Add('Accept', 'application/vnd.github.v3+json')
         [GitHub]::webSession = $web_session
         return $web_session
     }
-    static [void] SetSecToken() {
-        $t = Read-Host -Prompt "your api token" -MaskInput
-        $p = Read-Host -Prompt "Password" -AsSecureString
-        [GitHub]::SetSecToken($t, $p)
+    static [void] SetToken() {
+        $t = Read-Host -Prompt "Paste/write your api token" -MaskInput
+        $p = Read-Host -Prompt "Password to encrypt it (do Not forget it!)" -AsSecureString
+        [GitHub]::SetToken($t, $p)
     }
-    static [void] SetSecToken([string]$token, [securestring]$password) {
-        [GitHub]::secToken = [convert]::ToBase64String([AesGCM]::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token)))
+    static [void] SetToken([string]$token, [securestring]$password) {
+        [IO.File]::WriteAllText([GitHub]::GetTokenFile(), [convert]::ToBase64String([AesGCM]::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
     }
-    static [securestring] GetSecToken() {
-        Write-Host "[GitHub] Input password to decrypt your token:" -ForegroundColor Green
-        return [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([Convert]::FromBase64String('4YBR+PvDUZtkgPnP5QsruCeTa32nvWwnItPxrOY1KuQ3tWKACKANByEbH/lNfG9WZpc4p9zjPBScv+8tfrg51hR5g7k='))))
+    static [securestring] GetToken() {
+        if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText([GitHub]::GetTokenFile()))) {
+            Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -ForegroundColor Green
+            [GitHub]::SetToken()
+            Write-Host "[GitHub] Good, now let's use the token :)" -ForegroundColor DarkGreen
+        }
+        Write-Host "[GitHub] Input password to decrypt your token." -ForegroundColor Green
+        return [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())))))
     }
     static [PsObject] GetUserInfo([string]$UserName) {
         $response = Invoke-RestMethod -Uri "https://api.github.com/user/$UserName" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
@@ -1491,7 +1496,7 @@ class GitHub {
         return [GitHub]::GetGist($l.UserName, $l.GistId)
     }
     static [PsObject] GetGist([string]$UserName, [string]$GistId) {
-        $t = [GitHub]::GetSecToken()
+        $t = [GitHub]::GetToken()
         if ($null -eq ([GitHub]::webSession)) {
             [GitHub]::webSession = $(if ($null -eq $t) {
                     [GitHub]::createSession($UserName)
@@ -1524,6 +1529,14 @@ class GitHub {
         }
         $response = Invoke-RestMethod -Uri $url -WebSession ([GitHub]::webSession) -Method Post -Body ($body | ConvertTo-Json) -Verbose:$false
         return $response
+    }
+    static [string] GetTokenFile() {
+        if ([IO.File]::Exists([GitHub]::TokenFile)) {
+            return [GitHub]::TokenFile
+        }
+        [GitHub]::TokenFile = [IO.Path]::Combine([cryptobase]::Get_dataPath('Github', 'clicache'), "token");
+        if (![IO.File]::Exists([GitHub]::TokenFile)) { New-Item -Type File -Path ([GitHub]::TokenFile) -Force | Out-Null }
+        return [GitHub]::TokenFile
     }
     static [PsCustomObject] ParseGistUri([uri]$GistUri) {
         return [PsCustomObject]@{
@@ -5429,7 +5442,7 @@ class CipherTron : CryptoBase {
     [ValidateNotNullOrEmpty()][Config] $Config
     [ValidateNotNullOrEmpty()][version] $Version
     [ValidateNotNullOrEmpty()][chatPresets] $Presets
-    [ValidateNotNullOrEmpty()][ChatSession] $ChatSession
+    static [ValidateNotNullOrEmpty()][ChatSession] $ChatSession
     static hidden [ValidateNotNull()][chatTmp] $Tmp
     static hidden [ValidateNotNullOrEmpty()][uri] $ConfigUri
     static hidden [bool] $useverbose = $verbosePreference -eq "continue"
@@ -5437,13 +5450,14 @@ class CipherTron : CryptoBase {
 
     CipherTron() {
         $this.Version = [CipherTron]::GetVersion()
-        $this.Presets = [chatPresets]::new(); $this::Tmp = [chatTmp]::new();
-        $this.ChatSession = [ChatSession]::new(); $this.SetConfigs();
+        $this.Presets = [chatPresets]::new();
+        [CipherTron]::Tmp = [chatTmp]::new();
+        [CipherTron]::ChatSession = [ChatSession]::new(); $this.SetConfigs();
         $this.PsObject.properties.add([psscriptproperty]::new('ConfigPath', [scriptblock]::Create({ return [CipherTron]::Get_Config_Path($this.Config.FileName) })))
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ return [CipherTron]::Get_dataPath() })))
-        $this.PsObject.properties.add([psscriptproperty]::new('User', [scriptblock]::Create({ return $this.ChatSession.User })))
-        $this.PsObject.properties.add([psscriptproperty]::new('ChatUid', [scriptblock]::Create({ return $this.ChatSession.ChatUid.ToString() })))
-        $this.PsObject.properties.add([psscriptproperty]::new('ChatLog', [scriptblock]::Create({ return $this.ChatSession.ChatLog })))
+        $this.PsObject.properties.add([psscriptproperty]::new('User', [scriptblock]::Create({ return [CipherTron]::ChatSession.User })))
+        $this.PsObject.properties.add([psscriptproperty]::new('ChatUid', [scriptblock]::Create({ return [CipherTron]::ChatSession.ChatUid.ToString() })))
+        $this.PsObject.properties.add([psscriptproperty]::new('ChatLog', [scriptblock]::Create({ return [CipherTron]::ChatSession.ChatLog })))
         $this.PsObject.properties.add([psscriptproperty]::new('Sessions', [scriptblock]::Create({ return @(Get-ChildItem ([ChatSessionManager]::GetSessionFolder()) -Filter "*.chat" | ForEach-Object { [ChatSession]::New($_.FullName) }) })))
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return [ChatSessionManager]::IsOffline() })))
     }
@@ -5485,13 +5499,13 @@ class CipherTron : CryptoBase {
             #         [void][cli]::Write("Invalid username or password. Please try again.", [System.ConsoleColor]::Red, $false, $false)
             #     }
             # }
-            if ($this.ChatSession.ChatLog.Messages.Count -le 1) {
+            if ([CipherTron]::ChatSession.ChatLog.Messages.Count -le 1) {
                 $this.SetStage();
             } else {
                 $finish_reason = $this::Tmp.vars.finish_reason
                 # Do chat resume stuff here. (re-send previous failed queries ...)
                 Write-Debug "Resuming Chat ... Finish_reason: $finish_reason" -Debug
-                if ($this.ChatSession.ChatLog.count.Equals(1)) { $this.ChatSession.ChatLog.clear(); $this.SetStage() }
+                if ([CipherTron]::ChatSession.ChatLog.count.Equals(1)) { [CipherTron]::ChatSession.ChatLog.clear(); $this.SetStage() }
                 switch -Wildcard ($finish_reason) {
                     'No_Internet' {
                         if (!$this.IsOffline) { [void][cli]::Write("Internet is back!") }
@@ -5591,7 +5605,7 @@ class CipherTron : CryptoBase {
         $RecdOfflnAns = $this::Tmp.vars.Response.Equals($this.Config.OfflineNoAns) -and $this.Config.LogOfflineErr
         $NonEmptyChat = !([string]::IsNullOrEmpty($this::Tmp.vars.Query) -and [string]::IsNullOrEmpty($this::Tmp.vars.Response))
         $ShouldRecord = $RecdOfflnAns -or $NonEmptyChat
-        if ($ShouldRecord) { $this.ChatSession.ChatLog.Add([ChatObject]::new($this::Tmp.vars.Query, $this::Tmp.vars.Response)) }
+        if ($ShouldRecord) { [CipherTron]::ChatSession.ChatLog.Add([ChatObject]::new($this::Tmp.vars.Query, $this::Tmp.vars.Response)) }
         $this::Tmp.vars.Set('Query', ''); $this::Tmp.vars.Set('Response', '')
     }
     hidden [void] GetResponse() {
@@ -5624,9 +5638,9 @@ class CipherTron : CryptoBase {
             }
         }
         $prompt = [string]::Empty
-        if ($this.ChatSession.ChatLog.Messages.Count -gt 0) {
+        if ([CipherTron]::ChatSession.ChatLog.Messages.Count -gt 0) {
             $prompt = [System.Text.StringBuilder]::new();
-            [void]$prompt.AppendLine($this.ChatSession.ChatLog.ToString())
+            [void]$prompt.AppendLine([CipherTron]::ChatSession.ChatLog.ToString())
             [void]$prompt.AppendLine()
             [void]$prompt.Append($this::Tmp.vars.StopSigns.Sendr)
             [void]$prompt.Append($npt)
@@ -5686,7 +5700,7 @@ $prompt
     }
     hidden [string] GetOfflineResponse([string]$query) {
         [ValidateNotNullOrEmpty()][string]$query = $query; if ($null -eq $this.Config -or $null -eq $this::Tmp.vars.Keys) { $this.SetConfigs() }; [string]$resp = '';
-        if ($this.ChatSession.ChatLog.Messages.Count -eq 0 -and $this::Tmp.vars.Query -eq $this.Config.First_Query) { return $this.Config.OfflineHello }
+        if ([CipherTron]::ChatSession.ChatLog.Messages.Count -eq 0 -and $this::Tmp.vars.Query -eq $this.Config.First_Query) { return $this.Config.OfflineHello }
         $resp = $this.Config.OfflineNoAns; trap { $resp = "Error! $_`n$resp" }
         Write-Debug "Checking through presets ..." -Debug
         $botcmd = $this.presets.ToArray() | Where-Object { $_.Keys -eq $query -or $_.values.aliases.aliasnames -contains $query }
@@ -5769,13 +5783,13 @@ $prompt
     }
     hidden [void] SetStage() {
         [bool]$IsComplete = $false
-        if ($this.ChatSession.ChatLog.Messages.Count -gt 0) {
+        if ([CipherTron]::ChatSession.ChatLog.Messages.Count -gt 0) {
             throw [System.InvalidOperationException]::new('Please Clear chatLog first.')
         }
         if ([string]::IsNullOrEmpty($this.Config.ChatDescrptn)) {
             throw [System.InvalidOperationException]::new('Please run setConfigs() first.')
         }
-        $this.ChatSession.ChatLog.Intro = $this.Config.ChatDescrptn
+        [CipherTron]::ChatSession.ChatLog.Intro = $this.Config.ChatDescrptn
         $c = [System.Text.StringBuilder]::new();
         [CipherTron]::Tmp.vars.Set('Query', $this.Config.First_Query)
         [void]$c.AppendLine("$($this.Config.ChatDescrptn)");
@@ -5794,33 +5808,38 @@ $prompt
         # Todo: Should work like exit but Instead you go back to a menu showing availble sessions
     }
     [void] SaveSession() {
-        $this.ChatSession.Save()
+        [CipherTron]::ChatSession.Save()
     }
     [void] LoadSession([string]$Uid) {
         if ([string]::IsNullOrWhiteSpace($uid)) { throw [InvalidArgumentException]::new('Uid') }
         $snFile = [IO.FileInfo]::new([IO.Path]::Combine([ChatSessionManager]::GetSessionFolder(), "$Uid.chat"))
         if (!$snFile.Exists) { throw [System.InvalidOperationException]::new("Failed to load chatsession with Id: '$Uid'", [System.IO.FileNotFoundException]::new('Unable to find the specified file.', $snFile.BaseName)) }
-        $this.ChatSession = [ChatSession]::new($snFile)
+        [CipherTron]::ChatSession = [ChatSession]::new($snFile)
     }
     [void] SetConfigs() { $this.SetConfigs([string]::Empty, $false) }
     [void] SetConfigs([string]$ConfigFile) { $this.SetConfigs($ConfigFile, $true) }
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
-        $defaultConfig = $this.Get_default_Config()
+        $defaultConfig = [CipherTron]::Get_default_Config()
         if ($null -eq $this.Config) { $this.Config = [Config]::new($defaultConfig) }
-        if ([string]::IsNullOrWhiteSpace($ConfigFile)) {
-            $ConfigFile = [IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $this.Config.FileName)
-        }
-        if (![IO.File]::Exists($ConfigFile)) {
+        $this.Config.File = [IO.FileInfo]::new($(if ([string]::IsNullOrWhiteSpace($ConfigFile)) {
+                    [IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $this.Config.FileName)
+                } else {
+                    $ConfigFile
+                }
+            )
+        )
+        if (![IO.File]::Exists($this.Config.File.FullName)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
-                throw [System.IO.FileNotFoundException]::new("Unable to find file '$ConfigFile'")
+                throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File.FullName)'")
             }
-            New-Item -ItemType File -Path $ConfigFile | Out-Null
-            [IO.File]::WriteAllText($ConfigFile, (ConvertTo-Json $defaultConfig), [System.Text.Encoding]::UTF8)
-            Write-Verbose "Created New ConfigFile: $ConfigFile"
+            New-Item -ItemType File -Path $this.Config.File.FullName | Out-Null
+            $defaultpass = [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId())
+            [IO.File]::WriteAllText($this.Config.File.FullName, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $defaultConfig)), $defaultpass)), [System.Text.Encoding]::UTF8)
+            Write-Verbose "Created New ConfigFile: $($this.Config.File.FullName)"
         }
-        $this.Config.Import($ConfigFile)
-        if ($null -ne $this.Config.GistUri) { $this.SetRemote([uri]::New($this.Config.GistUri), $this.Config.FileName) }
+        # $this.Config.Import($ConfigFile)
+        if ($null -ne $this.Config.GistUri) { $this.Config.SetRemote([uri]::New($this.Config.GistUri), $this.Config.FileName) }
         #+++ Set commands and their aliases:
         # param([CipherTron]$bot)
         $Commands = [Ordered]@{
@@ -5880,13 +5899,13 @@ $prompt
         #+++ Ctrl get completion
         Set-PSReadLineKeyHandler -Key 'Ctrl+g' -BriefDescription OpenAICli -LongDescription "Calls Open AI on the current buffer" -ScriptBlock $([scriptblock]::Create("param(`$key, `$arg) (`$line, `$cursor) = (`$null,`$null); [CipherTron]::Complete([ref]`$line, [ref]`$cursor);"))
     }
-    hidden [hashtable] Get_default_Config() {
+    static [hashtable] Get_default_Config() {
         $defaultConfig = @{
             FileName      = 'BotConfig.json'
             GistUri       = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
             emojis        = @{ #ie: Use emojis as preffix to indicate messsage source.
                 Bot  = '🤖 : '
-                user = '{0} : ' -f ($this.ChatSession.User.preferences.Avatar_Emoji)
+                user = '{0} : ' -f ([CipherTron]::ChatSession.User.preferences.Avatar_Emoji)
             }
             GPt_Options   = @{
                 model             = 'text-davinci-003'
@@ -5896,15 +5915,15 @@ $prompt
                 frequency_penalty = 0.0
                 presence_penalty  = 0.0
             }
-            Quick_Exit    = $this.ChatSession.User.preferences.Quick_Exit
+            Quick_Exit    = [CipherTron]::ChatSession.User.preferences.Quick_Exit
             ERROR_NAMES   = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
             First_Query   = "Hi, can you introduce yourself in one sentense?"
-            OfflineHello  = "Hello; I am $($this.ChatSession.ChatLog.Recvr), your cryptography helper.`n"
+            OfflineHello  = "Hello; I am $([CipherTron]::ChatSession.ChatLog.Recvr), your cryptography helper.`n"
             OfflineNoAns  = "I'm sorry, I can't understand what you mean; Please Connect internet and try again.`n"
             NoApiKeyHelp  = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
             LogOfflineErr = $false # If true then chatlogs will include results like OfflineNoAns.
             ThrowNoApiKey = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
-            ChatDescrptn  = "The following is a conversation of $($this.ChatSession.ChatLog.Sendr) with an A.I cryptography assistant named $($this.ChatSession.ChatLog.Recvr). The assistant is a helpful, creative, and clever security expert with over 20 years of experience in cryptography and PowerShell Scripting.`n"
+            ChatDescrptn  = "The following is a conversation of $([CipherTron]::ChatSession.ChatLog.Sendr) with an A.I cryptography assistant named $([CipherTron]::ChatSession.ChatLog.Recvr). The assistant is a helpful, creative, and clever security expert with over 20 years of experience in cryptography and PowerShell Scripting.`n"
             UsageHelp     = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
             Bot_data_Path = [CipherTron]::Get_dataPath()
             # Default aliases for Preset commands:
@@ -6090,13 +6109,13 @@ $prompt
         # save stuff, Restore stuff
         [System.Console]::Out.NewLine; [void]$this.SaveSession()
         $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle = $this::Tmp.vars.OgWindowTitle
-        $this::Tmp.vars.Set('Query', 'exit'); $this.ChatSession.ChatLog.SetMessage($this::Tmp.vars.Query);
+        $this::Tmp.vars.Set('Query', 'exit'); [CipherTron]::ChatSession.ChatLog.SetMessage($this::Tmp.vars.Query);
         if ($this::Tmp.vars.Quick_Exit) {
             $this::Tmp.vars.Set('Response', [cli]::Write($ExitMsg)); return
         }
         $cResp = 'Do you mean Close chat?'
         [void][cli]::Write('++  '); [void][cli]::Write('Close this chat session', [System.ConsoleColor]::Green, $true, $false); [void][cli]::Write("  ++`n", $false);
-        [void][cli]::Write("    $cResp`n"); $this.ChatSession.ChatLog.SetResponse($cResp);
+        [void][cli]::Write("    $cResp`n"); [CipherTron]::ChatSession.ChatLog.SetResponse($cResp);
         $answer = (Get-Variable host).Value.UI.PromptForChoice(
             '', $this::Tmp.vars.Response,
             [System.Management.Automation.Host.ChoiceDescription[]](
@@ -6108,13 +6127,13 @@ $prompt
         Write-Debug "Checking answers ..."
         if ($answer -eq 0) {
             $this::Tmp.vars.Set('Query', 'yes')
-            $this.RecordChat(); $this.ChatSession.ChatLog.SetResponse([cli]::Write($ExitMsg));
+            $this.RecordChat(); [CipherTron]::ChatSession.ChatLog.SetResponse([cli]::Write($ExitMsg));
             $this::Tmp.vars.Set('ChatIsOngoing', $false)
             $this::Tmp.vars.Set('ExitCode', 0)
         } else {
             $this.RecordChat();
-            $this.ChatSession.ChatLog.SetMessage('no');
-            $this.ChatSession.ChatLog.SetResponse([cli]::Write("Okay; then I'm here to help If you need anything."));
+            [CipherTron]::ChatSession.ChatLog.SetMessage('no');
+            [CipherTron]::ChatSession.ChatLog.SetResponse([cli]::Write("Okay; then I'm here to help If you need anything."));
             $this::Tmp.vars.Set('ChatIsOngoing', $true)
         }
         $this::Tmp.vars.Set('Query', ''); $this::Tmp.vars.Set('Response', '')
@@ -6809,18 +6828,19 @@ class Config {
         $l = [GitHub]::ParseGistUri($GistUri)
         $this.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files.$fileName.raw_url)
     }
-    [void] Import() {
-        $this.Import($this.File.FullName)
+    [PsObject] Import() {
+        return $this.Import($this.File.FullName)
     }
-    [void] Import([string]$FilePath) {
-        $this.Import($FilePath, [System.Text.Encoding]::UTF8)
+    [PsObject] Import([string]$FilePath) {
+        return $this.Import($FilePath, [System.Text.Encoding]::UTF8)
     }
-    [void] Import([string]$FilePath, [System.Text.Encoding]$Encoding) {
-        [void][Config]::Import($FilePath, [AesGCM]::GetPassword(), [string]::Empty, $Encoding)
+    [PsObject] Import([string]$FilePath, [System.Text.Encoding]$Encoding) {
+        return [Config]::Import($FilePath, [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()), [string]::Empty, $Encoding)
     }
     static [PsObject] Import([String]$FilePath, [securestring]$password, [string]$Compression, [System.Text.Encoding]$Encoding) {
         [ValidateNotNullOrEmpty()][System.Text.Encoding]$Encoding = $Encoding
-        [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetResolvedPath($FilePath)
+        [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
+        if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
         if (![string]::IsNullOrWhiteSpace($Compression)) { [AesGCM]::ValidateCompression($Compression) }
         $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.File]::ReadAllText($FilePath, $Encoding)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
         # JSON FORMATTED CONFIG FILE By default
