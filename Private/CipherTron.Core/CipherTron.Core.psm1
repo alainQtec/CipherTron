@@ -25,7 +25,7 @@ using namespace System.Text
 using namespace System.Net.Http
 using namespace System.Security
 using namespace System.Runtime.InteropServices
-
+[void][System.Reflection.Assembly]::Load([System.IO.File]::ReadAllBytes((Get-Command Trace-Command).dll)) # Load Microsoft.PowerShell.Utility.dll Just to be safe
 $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
 if ($dataFile.Exists) {
     $script:localizedData = [scriptblock]::Create("$([IO.File]::ReadAllText($dataFile))").Invoke()
@@ -1454,25 +1454,32 @@ class Base85 : EncodingBase {
 
 #region    GitHub
 class GitHub {
+    static $webSession
+    static [user] $user
     static [string] $TokenFile
-    static [Microsoft.PowerShell.Commands.WebRequestSession] $webSession
 
-    static [Microsoft.PowerShell.Commands.WebRequestSession] createSession([string]$UserName) {
+    static [PSObject] createSession() {
+        return [Github]::createSession([Github]::User.Name)
+    }
+    static [PSObject] createSession([string]$UserName) {
         [GitHub]::SetToken()
         return [GitHub]::createSession($UserName, [GitHub]::GetToken())
     }
-    static [Microsoft.PowerShell.Commands.WebRequestSession] createSession([string]$GitHubUserName, [securestring]$clientSecret) {
-        $GithubToken = [xconvert]::ToString([securestring]$clientSecret)
+    static [Psobject] createSession([string]$GitHubUserName, [securestring]$clientSecret) {
+        [ValidateNotNullOrEmpty()][string]$GitHubUserName = $GitHubUserName
+        [ValidateNotNullOrEmpty()][string]$GithubToken = $GithubToken = [xconvert]::ToString([securestring]$clientSecret)
         $encodedAuth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("$($GitHubUserName):$($GithubToken)"))
-        $web_session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
+        $web_session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
         [void]$web_session.Headers.Add('Authorization', "Basic $($encodedAuth)")
         [void]$web_session.Headers.Add('Accept', 'application/vnd.github.v3+json')
         [GitHub]::webSession = $web_session
         return $web_session
     }
     static [void] SetToken() {
-        $t = Read-Host -Prompt "Paste/write your api token" -MaskInput
-        $p = Read-Host -Prompt "Password to encrypt it (do Not forget it!)" -AsSecureString
+        # FOR Now I'll be using this token for testing Purposes (Will expire on Thu, Feb 29 2024.)
+        # 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
+        $t = Read-Host -Prompt "Paste/write your Github api token" -MaskInput
+        $p = Read-Host -Prompt "Paste/write your Password (To encrypt the token. Do Not forget it!)" -AsSecureString
         [GitHub]::SetToken($t, $p)
     }
     static [void] SetToken([string]$token, [securestring]$password) {
@@ -1545,6 +1552,7 @@ class GitHub {
         }
     }
     static [PsObject] GetUserRepositories() {
+        if ($null -eq [GitHub]::webSession) { [Github]::createSession() }
         $response = Invoke-RestMethod -Uri 'https://api.github.com/user/repos' -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
     }

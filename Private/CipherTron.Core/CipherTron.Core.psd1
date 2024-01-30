@@ -1,7 +1,7 @@
 @{
     ModuleVersion     = '1.1.0'
     RootModule        = 'CipherTron.Core.psm1'
-    RequiredModules   = @('PSReadLine')
+    RequiredModules   = @('PSReadLine', 'Microsoft.PowerShell.Utility')
     FunctionsToExport = @(
         'Encrypt-Object'
         'Decrypt-Object'
