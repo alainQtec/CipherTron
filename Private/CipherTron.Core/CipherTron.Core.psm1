@@ -25,7 +25,10 @@ using namespace System.Text
 using namespace System.Net.Http
 using namespace System.Security
 using namespace System.Runtime.InteropServices
-[void][System.Reflection.Assembly]::Load([System.IO.File]::ReadAllBytes((Get-Command Trace-Command).dll)) # Load Microsoft.PowerShell.Utility.dll Just to be safe
+
+# Load Microsoft.PowerShell.Utility.dll:
+[void][System.Reflection.Assembly]::Load([System.IO.File]::ReadAllBytes((Get-Command Trace-Command).dll))
+# Load localizedData:
 $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
 if ($dataFile.Exists) {
     $script:localizedData = [scriptblock]::Create("$([IO.File]::ReadAllText($dataFile))").Invoke()
@@ -226,6 +229,83 @@ class cPsObject : PsObject {
         )
     }
 }
+class NetworkManager {
+    [string] $HostName
+    static [System.Net.IPAddress[]] $IPAddresses
+
+    NetworkManager ([string]$HostName) {
+        $this.HostName = $HostName
+        $this::IPAddresses = [System.Net.Dns]::GetHostAddresses($HostName)
+    }
+    static [string] GetResponse ([string]$URL) {
+        [System.Net.HttpWebRequest]$Request = [System.Net.HttpWebRequest]::Create($URL)
+        $Request.Method = "GET"
+        $Request.Timeout = 10000 # 10 seconds
+        [System.Net.HttpWebResponse]$Response = [System.Net.HttpWebResponse]$Request.GetResponse()
+        if ($Response.StatusCode -eq [System.Net.HttpStatusCode]::OK) {
+            [System.IO.Stream]$ReceiveStream = $Response.GetResponseStream()
+            [System.IO.StreamReader]$ReadStream = [System.IO.StreamReader]::new($ReceiveStream)
+            [string]$Content = $ReadStream.ReadToEnd()
+            $ReadStream.Close()
+            $Response.Close()
+            return $Content
+        } else {
+            throw "The request failed with status code: $($Response.StatusCode)"
+        }
+    }
+    static [IO.FileInfo] DownloadFile([uri]$url) {
+        # No $outFile so we create ones ourselves, and use suffix to prevent duplicaltes
+        $randomSuffix = [Guid]::NewGuid().Guid.subString(15).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1)))
+        return [NetworkManager]::DownloadFile($url, "$(Split-Path $url.AbsolutePath -Leaf)_$randomSuffix");
+    }
+    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile) {
+        $outFile = [CryptoBase]::GetUnResolvedPath($outFile);
+        if ([System.IO.Directory]::Exists($outFile)) {
+            throw [InvalidArgumentException]::new("outFile", "Please provide valid file path")
+        }
+        if ([IO.File]::Exists($outFile)) { Remove-Item $outFile -Force }
+        $stream = $null; $fileStream = $null; $name = Split-Path $url -Leaf;
+        $request = [System.Net.HttpWebRequest]::Create($url)
+        $request.UserAgent = "Mozilla/5.0"
+        $response = $request.GetResponse()
+        $contentLength = $response.ContentLength
+        $stream = $response.GetResponseStream()
+        $buffer = New-Object byte[] 1024
+        $fileStream = [System.IO.FileStream]::new($outFile, [System.IO.FileMode]::CreateNew)
+        $totalBytesReceived = 0
+        $totalBytesToReceive = $contentLength
+        while ($totalBytesToReceive -gt 0) {
+            $bytesRead = $stream.Read($buffer, 0, 1024)
+            $totalBytesReceived += $bytesRead
+            $totalBytesToReceive -= $bytesRead
+            $fileStream.Write($buffer, 0, $bytesRead)
+            $percentComplete = [int]($totalBytesReceived / $contentLength * 100)
+            Write-Progress -Activity "Downloading $name to $Outfile" -Status "Progress: $percentComplete%" -PercentComplete $percentComplete
+        }
+        try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
+        return (Get-Item $outFile)
+    }
+
+    static [void] UploadFile ([string]$SourcePath, [string]$DestinationURL) {
+        Invoke-RestMethod -Uri $DestinationURL -Method Post -InFile $SourcePath
+    }
+
+    static [bool] TestConnection ([string]$HostName) {
+        [ValidateNotNullOrEmpty()][string]$HostName = $HostName
+        if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
+        $IsConnected = $null; try {
+            [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send($HostName);
+            $IsConnected = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+        } catch [System.Net.Sockets.SocketException], [System.Net.NetworkInformation.PingException] {
+            $IsConnected = $false
+        } catch {
+            $IsConnected = $false;
+            Write-Error $_
+        }
+        return $IsConnected
+    }
+}
+
 class EncodingBase : System.Text.ASCIIEncoding {
     EncodingBase() {}
     static [byte[]] GetBytes([string] $text) {
@@ -522,38 +602,6 @@ class CryptoBase {
     }
     static [void] ValidateCompression([string]$Compression) {
         if ($Compression -notin ([Enum]::GetNames('Compression' -as 'Type'))) { Throw [System.InvalidCastException]::new("The name '$Compression' is not a valid [Compression]`$typeName.") };
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url) {
-        # No $outFile so we create ones ourselves, and use suffix to prevent duplicaltes
-        $randomSuffix = [Guid]::NewGuid().Guid.subString(15).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1)))
-        return [CryptoBase]::DownloadFile($url, "$(Split-Path $url.AbsolutePath -Leaf)_$randomSuffix");
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile) {
-        $outFile = [CryptoBase]::GetUnResolvedPath($outFile);
-        if ([System.IO.Directory]::Exists($outFile)) {
-            throw [InvalidArgumentException]::new("outFile", "Please provide valid file path")
-        }
-        if ([IO.File]::Exists($outFile)) { Remove-Item $outFile -Force }
-        $stream = $null; $fileStream = $null; $name = Split-Path $url -Leaf;
-        $request = [System.Net.HttpWebRequest]::Create($url)
-        $request.UserAgent = "Mozilla/5.0"
-        $response = $request.GetResponse()
-        $contentLength = $response.ContentLength
-        $stream = $response.GetResponseStream()
-        $buffer = New-Object byte[] 1024
-        $fileStream = [System.IO.FileStream]::new($outFile, [System.IO.FileMode]::CreateNew)
-        $totalBytesReceived = 0
-        $totalBytesToReceive = $contentLength
-        while ($totalBytesToReceive -gt 0) {
-            $bytesRead = $stream.Read($buffer, 0, 1024)
-            $totalBytesReceived += $bytesRead
-            $totalBytesToReceive -= $bytesRead
-            $fileStream.Write($buffer, 0, $bytesRead)
-            $percentComplete = [int]($totalBytesReceived / $contentLength * 100)
-            Write-Progress -Activity "Downloading $name to $Outfile" -Status "Progress: $percentComplete%" -PercentComplete $percentComplete
-        }
-        try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
-        return (Get-Item $outFile)
     }
 }
 #endregion CryptoBase
@@ -1476,8 +1524,6 @@ class GitHub {
         return $web_session
     }
     static [void] SetToken() {
-        # FOR Now I'll be using this token for testing Purposes (Will expire on Thu, Feb 29 2024.)
-        # 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
         $t = Read-Host -Prompt "Paste/write your Github api token" -MaskInput
         $p = Read-Host -Prompt "Paste/write your Password (To encrypt the token. Do Not forget it!)" -AsSecureString
         [GitHub]::SetToken($t, $p)
@@ -1557,7 +1603,8 @@ class GitHub {
         return $response
     }
     static [bool] IsConnected() {
-        $cs = [bool](Test-Connection github.com -ErrorAction Ignore)
+        Write-Verbose "[Github] Testing Connection ..."
+        $cs = [NetworkManager]::TestConnection("github.com")
         if (!$cs) { Write-Warning "[Github] Unable to connect" }
         return $cs
     }
@@ -2916,7 +2963,7 @@ class VaultClient {
                 #TODO: Check version of the file, if the version is lower, then $should_download = $true
             }
             if ($should_download) {
-                $Outfile = [FileCryptr]::DownloadFile([uri]::new($latest_dl), $Outfile.FullName)
+                $Outfile = [NetworkManager]::DownloadFile([uri]::new($latest_dl), $Outfile.FullName)
             }
             if ($Outfile.Exists()) {
                 Expand-Archive -Path $Outfile.FullName -DestinationPath "C:\Program Files\Vault\"
@@ -4908,33 +4955,6 @@ Class FileCryptr {
     static [string] Deobfuscate([string]$base64EncodedString) {
         throw 'Idk! Just run the damn file; (and hope its not a virus).'
     }
-    static [IO.FileInfo] DownloadFile([uri]$url) {
-        # No $outFile so we create ones ourselves, and use suffix to prevent duplicaltes
-        $randomSuffix = [Guid]::NewGuid().Guid.subString(15).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1)))
-        return [FileCryptr]::DownloadFile($url, "$(Split-Path $url.AbsolutePath -Leaf)_$randomSuffix");
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile) {
-        $stream = $null; $fileStream = $null; $name = Split-Path $url -Leaf;
-        $request = [System.Net.HttpWebRequest]::Create($url)
-        $request.UserAgent = "Mozilla/5.0"
-        $response = $request.GetResponse()
-        $contentLength = $response.ContentLength
-        $stream = $response.GetResponseStream()
-        $buffer = New-Object byte[] 1024
-        $fileStream = [System.IO.FileStream]::new([CryptoBase]::GetUnResolvedPath($outFile), [System.IO.FileMode]::Create)
-        $totalBytesReceived = 0
-        $totalBytesToReceive = $contentLength
-        while ($totalBytesToReceive -gt 0) {
-            $bytesRead = $stream.Read($buffer, 0, 1024)
-            $totalBytesReceived += $bytesRead
-            $totalBytesToReceive -= $bytesRead
-            $fileStream.Write($buffer, 0, $bytesRead)
-            $percentComplete = [int]($totalBytesReceived / $contentLength * 100)
-            Write-Progress -Activity "Downloading $name to $Outfile" -Status "Progress: $percentComplete%" -PercentComplete $percentComplete
-        }
-        try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
-        return (Get-Item $outFile)
-    }
     static [bool] IsTextFile([string]$filePath) {
         @(# Default file extensions to speed up the detection process.
             ".txt", ".log", ".ini", ".env", ".cfg", ".conf", ".cnf",
@@ -5479,7 +5499,7 @@ class CipherTron : CryptoBase {
         }
         if (![IO.File]::Exists($this.Config.File.FullName)) {
             if ([CipherTron]::useverbose) { "[+] Get your latest configs .." | Write-Host -ForegroundColor Magenta }
-            [CipherTron]::DownloadFile([CipherTron]::ConfigUri, $this.Config.File.FullName)
+            [NetworkManager]::DownloadFile([CipherTron]::ConfigUri, $this.Config.File.FullName)
         }
         [CipherTron]::WriteBanner()
         # code for menu goes here ...
@@ -6501,17 +6521,7 @@ class ChatSessionManager {
         return $Out
     }
     static [bool] IsOffline() {
-        if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
-        $IsOffline = $null; try {
-            [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send('www.google.com');
-            $IsOffline = $PingReply.Status -ne [System.Net.NetworkInformation.IPStatus]::Success
-        } catch [System.Net.Sockets.SocketException], [System.Net.NetworkInformation.PingException] {
-            $IsOffline = $true
-        } catch {
-            $IsOffline = $true;
-            Write-Error $_
-        }
-        return $IsOffline
+        return ![NetworkManager]::TestConnection('google.com')
     }
     static [pscustomobject] ParseId ([string]$Id) {
         $r = [xconvert]::ToString([guid]::new($Id)).Split(':')
