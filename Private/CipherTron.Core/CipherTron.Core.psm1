@@ -528,7 +528,6 @@ class CryptoBase {
     }
     # Use a cryptographic hash function (SHA-256) to generate a unique machine ID
     static [string] GetUniqueMachineId() {
-        Write-Verbose "[+] Get MachineId ..."
         $Id = [string]($Env:MachineId)
         $vp = (Get-Variable VerbosePreference).Value
         try {
@@ -1533,12 +1532,12 @@ class GitHub {
         [IO.File]::WriteAllText([GitHub]::TokenFile, [convert]::ToBase64String([AesGCM]::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
     }
     static [securestring] GetToken() {
-        if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText([GitHub]::TokenFile))) {
+        if ([string]::IsNullOrWhiteSpace((Get-Content ([GitHub]::TokenFile) -ErrorAction Ignore))) {
             Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -ForegroundColor Green
             [GitHub]::SetToken()
             Write-Host "[GitHub] Good, now let's use the token :)" -ForegroundColor DarkGreen
         } else {
-            Write-Verbose "[GitHub] encrypted token found in file: $([GitHub]::TokenFile)"
+            Write-Host "[GitHub] encrypted token found in file: $([GitHub]::TokenFile)" -ForegroundColor DarkGreen
         }
         Write-Host "[GitHub] Input password to decrypt your token." -ForegroundColor Green
         return [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())))))
@@ -5486,33 +5485,10 @@ class CipherTron : CryptoBase {
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return [ChatSessionManager]::IsOffline() })))
     }
 
-    [void] ShowMenu() {
-        if ($null -eq [CipherTron]::ConfigUri) {
-            if ([CipherTron]::useverbose) { "[+] Get ConfigUri ..." | Write-Host -ForegroundColor Magenta }
-            # for now just use this file for multiple encryption POC
-            if ($null -eq $this.Config) { $this.SetConfigs() }
-            [CipherTron]::ConfigUri = $this.Config.Remote
-        }
-        if (![IO.File]::Exists($this.Config.File.FullName)) {
-            if ([CipherTron]::useverbose) { "[+] Get your latest configs .." | Write-Host -ForegroundColor Magenta }
-            [NetworkManager]::DownloadFile([CipherTron]::ConfigUri, $this.Config.File.FullName)
-        }
-        [CipherTron]::WriteBanner()
-        # code for menu goes here ...
-    }
-    static [void] WriteBanner() {
-        $bc = [CipherTron]::banners.Count
-        if ($null -eq [CipherTron]::banners -or ($bc -eq 0)) {
-            [void][CipherTron]::banners.Add([base85]::Decode([xconvert]::ToDeCompressed('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')));
-            [void][CipherTron]::banners.Add([base85]::Decode([xconvert]::ToDeCompressed('H4sIAAAAAAAAA41UTW+DMAy9I+VHIKrCpB526aH70Na12mWTKFvVbWpXJqAtGaxFHfv/SyABJyTA0bGfYz8/Gx9GfuRNH93o+c/1V/gwmq+pGXr725ujaO4qEwQjw7O3T2c3na/90s/NuAe68JIUWr+Uu4mm5iZChjY7b6SrTVJFla4Mf5hd/rBwC1/XmAW+/8XkbRUICJ4ihFzMJkfXu3B3Si5sx04lppChRtPPhrn5/fo1Pidtua9MygULT3j5wb5A0/Bz/0a0fsiklWCBqbexzEVc0ukMPnOpAP1kaXPIAN0qZqdG83oKr0YXNDvNnTcH/RFW6FjSBfybUJObYimxILLNFg51gadmUCta4kqXIuqnC+cus9o1J3AB/APnVHPVqthygwgXrVx1q4Y1oueKeN+z5lApU1aeFm/I6B4G7wZsGBu0yEVzA1uvDdheevjU6LiHqlq54I320Fyx7GJ4qSqwcNL5yEsEMzOb3wsuI5ErOgzJK6ALL+GCnxfxM+bXoMH+pch4CSfLk6hJdTg8JLBNcPgUjcpoKv/hP5EAUEL/BgAA')));
-        }
-        $bn = [CipherTron]::banners[(Get-Random (0..($bc-1)))]
-        [System.Text.Encoding]::UTF8.GetString($bn) | Write-Host -ForegroundColor Green
-        [void][cli]::Write("            Making Cryptography Easy and Fun", [System.ConsoleColor]::Green, $true, $false)
-    }
     [void] Chat() {
         try {
             $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle = "Ciphertron";
+            $this.ShowMenu()
             # $authenticated = $false
             # while (-not $authenticated) {
             #     $username = $this.Presets.Prompt("Please enter your username:")
@@ -5853,17 +5829,22 @@ $prompt
                 }
             )
         )
+        if ($null -ne $this.Config.GistUri) { $this.Config.SetRemote([uri]::New($this.Config.GistUri), $this.Config.FileName) }
         if (![IO.File]::Exists($this.Config.File.FullName)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
                 throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File.FullName)'")
             }
-            New-Item -ItemType File -Path $this.Config.File.FullName | Out-Null
-            $defaultpass = [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId())
-            [IO.File]::WriteAllText($this.Config.File.FullName, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $defaultConfig)), $defaultpass)), [System.Text.Encoding]::UTF8)
+            $this.Config.File = New-Item -ItemType File -Path $this.Config.File.FullName
+        }
+        if ($null -ne $this.Config.Remote) {
+            [IO.File]::WriteAllText($this.Config.File.FullName, $(Invoke-WebRequest $this.Config.Remote -Verbose:$false).Content, [System.Text.Encoding]::UTF8)
+            Write-Verbose "Downloaded ConfigFile: $($this.Config.File.FullName)"
+        } else {
+            [IO.File]::WriteAllText($this.Config.File.FullName, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $defaultConfig)), [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()))), [System.Text.Encoding]::UTF8)
             Write-Verbose "Created New ConfigFile: $($this.Config.File.FullName)"
         }
-        # $this.Config.Import($ConfigFile)
-        if ($null -ne $this.Config.GistUri) { $this.Config.SetRemote([uri]::New($this.Config.GistUri), $this.Config.FileName) }
+        Write-Host "[ciphertron] Load Config: ReadAllText $($this.Config.File.FullName) ..." -NoNewline -ForegroundColor Green
+        [void]$this.Config.Import($this.Config.File.FullName)
         #+++ Set commands and their aliases:
         # param([CipherTron]$bot)
         $Commands = [Ordered]@{
@@ -5918,17 +5899,21 @@ $prompt
         $vars.Set('StopSigns', [gptOptions]::new().GetStopSign())
         $vars.Set('OgWindowTitle', $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle)
         $vars.Set('WhatIf_IsPresent', [bool]$((Get-Variable WhatIfPreference).Value.IsPresent))
-        Write-Verbose "Load Config: ReadAllText $ConfigFile Complete."
         [cli]::textValidator = [scriptblock]::Create({ param($npt) if ([CipherTron]::Tmp.vars.ChatIsOngoing -and ([string]::IsNullOrWhiteSpace($npt))) { throw [System.ArgumentNullException]::new('InputText!') } })
+        Write-Host " Done." -ForegroundColor Green
+
         #+++ Ctrl get completion
         Set-PSReadLineKeyHandler -Key 'Ctrl+g' -BriefDescription OpenAICli -LongDescription "Calls Open AI on the current buffer" -ScriptBlock $([scriptblock]::Create("param(`$key, `$arg) (`$line, `$cursor) = (`$null,`$null); [CipherTron]::Complete([ref]`$line, [ref]`$cursor);"))
     }
+    [bool] DeleteConfigs() {
+        return [bool]$(try { Remove-Item $this.Config.File.FullName -Force | Out-Null; [GitHub]::GetTokenFile() | Split-Path | Remove-Item -Recurse -Force; $true } catch { $false })
+    }
     static [hashtable] Get_default_Config() {
         $defaultConfig = @{
-            FileName      = 'BotConfig.json'
+            FileName      = 'Config.enc' # Config is stored locally but it's contents will always be encrypted.
             GistUri       = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
             emojis        = @{ #ie: Use emojis as preffix to indicate messsage source.
-                Bot  = '🤖 : '
+                Bot  = '{0} : ' -f ([System.Text.UTF8Encoding]::UTF8.GetString([byte[]](240, 159, 150, 173, 32)))
                 user = '{0} : ' -f ([CipherTron]::ChatSession.User.preferences.Avatar_Emoji)
             }
             GPt_Options   = @{
@@ -5947,7 +5932,7 @@ $prompt
             NoApiKeyHelp  = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
             LogOfflineErr = $false # If true then chatlogs will include results like OfflineNoAns.
             ThrowNoApiKey = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
-            ChatDescrptn  = "The following is a conversation of $([CipherTron]::ChatSession.ChatLog.Sendr) with an A.I cryptography assistant named $([CipherTron]::ChatSession.ChatLog.Recvr). The assistant is a helpful, creative, and clever security expert with over 20 years of experience in cryptography and PowerShell Scripting.`n"
+            ChatDescrptn  = "The following is a conversation of $([CipherTron]::ChatSession.ChatLog.Sendr) with an A.I cryptography assistant named $([CipherTron]::ChatSession.ChatLog.Recvr). The assistant is a helpful, creative, clever security expert and extremely experienced in cryptography and PowerShell Scripting.`n"
             UsageHelp     = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
             Bot_data_Path = [CipherTron]::Get_dataPath()
             # Default aliases for Preset commands:
@@ -6012,6 +5997,28 @@ $prompt
             }
             [Microsoft.PowerShell.PSConsoleReadLine]::Insert("'@")
         }
+    }
+    static [void] WriteBanner() {
+        $bc = [CipherTron]::banners.Count
+        if ($null -eq [CipherTron]::banners -or ($bc -eq 0)) {
+            [void][CipherTron]::banners.Add([base85]::Decode([xconvert]::ToDeCompressed('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')));
+            [void][CipherTron]::banners.Add([base85]::Decode([xconvert]::ToDeCompressed('H4sIAAAAAAAAA41UTW+DMAy9I+VHIKrCpB526aH70Na12mWTKFvVbWpXJqAtGaxFHfv/SyABJyTA0bGfYz8/Gx9GfuRNH93o+c/1V/gwmq+pGXr725ujaO4qEwQjw7O3T2c3na/90s/NuAe68JIUWr+Uu4mm5iZChjY7b6SrTVJFla4Mf5hd/rBwC1/XmAW+/8XkbRUICJ4ihFzMJkfXu3B3Si5sx04lppChRtPPhrn5/fo1Pidtua9MygULT3j5wb5A0/Bz/0a0fsiklWCBqbexzEVc0ukMPnOpAP1kaXPIAN0qZqdG83oKr0YXNDvNnTcH/RFW6FjSBfybUJObYimxILLNFg51gadmUCta4kqXIuqnC+cus9o1J3AB/APnVHPVqthygwgXrVx1q4Y1oueKeN+z5lApU1aeFm/I6B4G7wZsGBu0yEVzA1uvDdheevjU6LiHqlq54I320Fyx7GJ4qSqwcNL5yEsEMzOb3wsuI5ErOgzJK6ALL+GCnxfxM+bXoMH+pch4CSfLk6hJdTg8JLBNcPgUjcpoKv/hP5EAUEL/BgAA')));
+        }
+        $bn = [CipherTron]::banners[(Get-Random (0..($bc-1)))]
+        [System.Text.Encoding]::UTF8.GetString($bn) | Write-Host -ForegroundColor Green
+        [void][cli]::Write("            Making Cryptography Easy and Fun", [System.ConsoleColor]::Green, $true, $false)
+    }
+    [void] ShowMenu() {
+        if ($null -eq [CipherTron]::ConfigUri) {
+            if ($null -eq $this.Config) { $this.SetConfigs() }
+            [CipherTron]::ConfigUri = $this.Config.Remote
+        }
+        if (![IO.File]::Exists($this.Config.File.FullName)) {
+            if ([CipherTron]::useverbose) { "[+] Get your latest configs .." | Write-Host -ForegroundColor Magenta }
+            [NetworkManager]::DownloadFile([CipherTron]::ConfigUri, $this.Config.File.FullName)
+        }
+        [CipherTron]::WriteBanner()
+        # code for menu goes here ...
     }
     [void] SetAPIkey() {
         if ($null -eq $this::Tmp.vars.Keys) { $this.SetConfigs() }
@@ -6842,16 +6849,16 @@ class Config {
         $l = [GitHub]::ParseGistUri($GistUri); [GitHub]::user = [User]::new($l.UserName)
         $this.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files.$fileName.raw_url)
     }
-    [PsObject] Import() {
-        return $this.Import($this.File.FullName)
+    [void] Import() {
+        $this.Import($this.File.FullName)
     }
-    [PsObject] Import([string]$FilePath) {
-        return $this.Import($FilePath, [System.Text.Encoding]::UTF8)
+    [void] Import([string]$FilePath) {
+        $this.Import($FilePath, [System.Text.Encoding]::UTF8)
     }
-    [PsObject] Import([string]$FilePath, [System.Text.Encoding]$Encoding) {
-        return [Config]::Import($FilePath, [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()), [string]::Empty, $Encoding)
+    [void] Import([string]$FilePath, [System.Text.Encoding]$Encoding) {
+        $this.Import($FilePath, [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()), [string]::Empty, $Encoding)
     }
-    static [PsObject] Import([String]$FilePath, [securestring]$password, [string]$Compression, [System.Text.Encoding]$Encoding) {
+    [void] Import([String]$FilePath, [securestring]$password, [string]$Compression, [System.Text.Encoding]$Encoding) {
         [ValidateNotNullOrEmpty()][System.Text.Encoding]$Encoding = $Encoding
         [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
         if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
@@ -6859,12 +6866,10 @@ class Config {
         $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.File]::ReadAllText($FilePath, $Encoding)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
         # JSON FORMATTED CONFIG FILE By default
         $ob = ConvertFrom-Json -InputObject ([System.Text.Encoding]::UTF8.GetString($da))
-        # $ob | Get-Member -Type NoteProperty | Select-Object Name | ForEach-Object {
-        #     $key = $_.Name; $val = $ob.$key; $this.Set($key, $val);
-        # }
-        return $ob
+        $ob | Get-Member -Type NoteProperty | Select-Object Name | ForEach-Object {
+            $key = $_.Name; $val = $ob.$key; $this.Set($key, $val);
+        }
     }
-
     [string] ToString() {
         $r = $this.ToArray(); $s = ''
         $shortnr = [scriptblock]::Create({
