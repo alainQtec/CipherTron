@@ -1504,7 +1504,8 @@ class Base85 : EncodingBase {
 class GitHub {
     static $webSession
     static [user] $user
-    static [string] $TokenFile
+    static hidden [string] $TokenFile = [GitHub]::GetTokenFile()
+    static hidden [EncryptionScope] $EncryptionScope = [EncryptionScope]::Machine
 
     static [PSObject] createSession() {
         return [Github]::createSession([Github]::User.Name)
@@ -1525,22 +1526,25 @@ class GitHub {
     }
     static [void] SetToken() {
         $t = Read-Host -Prompt "Paste/write your Github api token" -MaskInput
-        $p = Read-Host -Prompt "Paste/write your Password (To encrypt the token. Do Not forget it!)" -AsSecureString
-        [GitHub]::SetToken($t, $p)
+        [GitHub]::SetToken($t, $(Read-Host -Prompt "Paste/write your Password (To encrypt the token. Do Not forget it!)" -AsSecureString))
     }
     static [void] SetToken([string]$token, [securestring]$password) {
-        [IO.File]::WriteAllText([GitHub]::GetTokenFile(), [convert]::ToBase64String([AesGCM]::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
+        if (![IO.File]::Exists([GitHub]::TokenFile)) { New-Item -Type File -Path ([GitHub]::TokenFile) -Force | Out-Null }
+        [IO.File]::WriteAllText([GitHub]::TokenFile, [convert]::ToBase64String([AesGCM]::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
     }
     static [securestring] GetToken() {
-        if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText([GitHub]::GetTokenFile()))) {
+        if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText([GitHub]::TokenFile))) {
             Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -ForegroundColor Green
             [GitHub]::SetToken()
             Write-Host "[GitHub] Good, now let's use the token :)" -ForegroundColor DarkGreen
+        } else {
+            Write-Verbose "[GitHub] encrypted token found in file: $([GitHub]::TokenFile)"
         }
         Write-Host "[GitHub] Input password to decrypt your token." -ForegroundColor Green
         return [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())))))
     }
     static [PsObject] GetUserInfo([string]$UserName) {
+        if ([string]::IsNullOrWhiteSpace([GitHub]::user.Name)) { [GitHub]::createSession() }
         $response = Invoke-RestMethod -Uri "https://api.github.com/user/$UserName" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
     }
@@ -1587,9 +1591,7 @@ class GitHub {
         if ([IO.File]::Exists([GitHub]::TokenFile)) {
             return [GitHub]::TokenFile
         }
-        [GitHub]::TokenFile = [IO.Path]::Combine([cryptobase]::Get_dataPath('Github', 'clicache'), "token");
-        if (![IO.File]::Exists([GitHub]::TokenFile)) { New-Item -Type File -Path ([GitHub]::TokenFile) -Force | Out-Null }
-        return [GitHub]::TokenFile
+        return [IO.Path]::Combine([cryptobase]::Get_dataPath('Github', 'clicache'), "token");
     }
     static [PsCustomObject] ParseGistUri([uri]$GistUri) {
         return [PsCustomObject]@{
@@ -1603,9 +1605,11 @@ class GitHub {
         return $response
     }
     static [bool] IsConnected() {
-        Write-Verbose "[Github] Testing Connection ..."
+        $re = @{ true  = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
+        Write-Host "[Github] Testing Connection ... " -ForegroundColor Cyan -NoNewline
         $cs = [NetworkManager]::TestConnection("github.com")
-        if (!$cs) { Write-Warning "[Github] Unable to connect" }
+        $re = $re[$cs.ToString()]
+        Write-Host $re.m -ForegroundColor $re.c
         return $cs
     }
 }
@@ -1699,7 +1703,7 @@ class Gist {
 #endregion GitHub
 
 
-#region    _Passwords
+#region    PasswordManager
 class PasswordManager {
     [securestring] static GetPassword() {
         $ThrowOnFailure = $true
@@ -1880,7 +1884,174 @@ class PasswordManager {
         }
         return $result
     }
+    static [string] CreateHOTP([string]$SECRET, [int]$Phone) {
+        return [PasswordManager]::CreateHOTP($phone, [PasswordManager]::GetOtp($SECRET))
+    }
+
+    static [string] CreateHOTP([int]$phone, [string]$otp) {
+        return [PasswordManager]::CreateHOTP($phone, $otp, 5)
+    }
+    static [string] CreateHOTP([int]$phone, [string]$otp, [int]$expiresAfter) {
+        $ttl = $expiresAfter * 60 * 1000
+        $expires = (Get-Date).AddMilliseconds($ttl).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        $bytes = [byte[]]::new(16)
+        [System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes($bytes)
+        $salt = [BitConverter]::ToString($bytes) -replace '-'
+        $data = "$phone.$otp.$expires.$salt"
+        Write-Host "data: " -NoNewline -ForegroundColor Green; Write-Host "$data" -ForegroundColor Blue
+        $hashBase = [FipsHmacSha256]::new().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($data))
+        $hash = "$hashBase.$expires.$salt"
+        #TODO: Implement the SMS sending function here
+        return $hash
+    }
+    static [bool] VerifyHOTP([string]$otp, [int]$phone, [string]$hash) {
+        if (-not $hash -match "\.") {
+            return $false
+        }
+
+        $hashValue, $expires, $salt = $hash -split "\."
+
+        $now = (Get-Date).Ticks / 10000
+        if ($now -gt [double]$expires) {
+            return $false
+        }
+        $data = "$phone.$otp.$expires.$salt"
+        Write-Host "data: " -NoNewline -ForegroundColor Green; Write-Host "$data" -ForegroundColor Blue
+        $newCalculatedHash = [FipsHmacSha256]::new().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($data))
+
+        if ($newCalculatedHash -eq $hashValue) {
+            return $true
+        }
+        return $false
+    }
+
+    static [string] ParseOtpUrl([string]$otpURL) {
+        # $otpURL can be decrypted text
+        if (-not [System.Uri]::IsWellFormedUriString("$otpURL", "Absolute") -or $otpURL -notmatch "^otpauth://") { Write-Host "The decrypted text is not a valid OTP URL" "Error" ; $script:FileBrowser.Dispose() ; exit 1 }
+        $parseOtpUrl =[scriptblock]::Create("[System.Web.HttpUtility]::ParseQueryString(([uri]::new('$otpURL')).Query)").Invoke()
+        $otpType = $([uri]$otpURL).Host
+        if ($otpType -eq "hotp") { Write-Warning "TOTP is only supported" }
+        if ($otpType -eq "totp" ) { $otpType = "$otpType=" }
+        $otpPeriod = if (-not [string]::IsNullOrEmpty($parseOtpUrl["period"])) { $parseOtpUrl["period"] } else { 30 }
+        $otpDigits = if (-not [string]::IsNullOrEmpty($parseOtpUrl["digits"])) { $parseOtpUrl["digits"] } else { 6 }
+        $otpSecret = $parseOtpUrl["secret"]
+        return [PasswordManager]::GetOtp("$otpSecret", $otpDigits, "$otpPeriod")
+    }
+
+    static [string] GetOtp([string]$SECRET) {
+        return [PasswordManager]::GetOtp($SECRET, 4, "5")
+    }
+    static [string] GetOtp([string]$SECRET, [int]$LENGTH, [string]$WINDOW) {
+        $hmac = New-Object -TypeName System.Security.Cryptography.HMACSHA1
+        $hmac.key = $([PasswordManager]::ConvertBase32ToHex($SECRET.ToUpper())) -replace '^0x', '' -split "(?<=\G\w{2})(?=\w{2})" | ForEach-Object { [Convert]::ToByte( $_, 16 ) }
+        $timeSpan =  $(New-TimeSpan -Start (Get-Date -Year 1970 -Month 1 -Day 1 -Hour 0 -Minute 0 -Second 0) -End (Get-Date).ToUniversalTime()).TotalSeconds
+        $rndHash = $hmac.ComputeHash([byte[]][BitConverter]::GetBytes([Convert]::ToInt64([Math]::Floor($timeSpan/$WINDOW))))
+        $toffset = $rndhash[($rndHash.Length-1)] -band 0xf
+        $fullOTP = ($rndhash[$toffset] -band 0x7f) * [math]::pow(2, 24)
+        $fullOTP += ($rndHash[$toffset + 1] -band 0xff) * [math]::pow(2, 16)
+        $fullOTP += ($rndHash[$toffset + 2] -band 0xff) * [math]::pow(2, 8)
+        $fullOTP += ($rndHash[$toffset + 3] -band 0xff)
+
+        $modNumber = [math]::pow(10, $LENGTH)
+        $otp = $fullOTP % $modNumber
+        $otp = $otp.ToString("0" * $LENGTH)
+        return $otp
+    }
+    static [string] ConvertBase32ToHex([string]$base32) {
+        $base32chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        $bits = "";
+        $hex = "";
+
+        for ($i = 0; $i -lt $base32.Length; $i++) {
+            $val = $base32chars.IndexOf($base32.Chars($i));
+            $binary = [Convert]::ToString($val, 2)
+            $str = $binary.ToString();
+            $len = 5
+            $pad = '0'
+            if (($len + 1) -ge $str.Length) {
+                while (($len - 1) -ge $str.Length) {
+                    $str = ($pad + $str)
+                }
+            }
+            $bits += $str
+        }
+
+        for ($i = 0; $i+4 -le $bits.Length; $i+=4) {
+            $chunk = $bits.Substring($i, 4)
+            # Write-Host $chunk
+            $intChunk = [Convert]::ToInt32($chunk, 2)
+            $hexChunk = '{0:x}' -f $([int]$intChunk)
+            # Write-Host $hexChunk
+            $hex = $hex + $hexChunk
+        }
+        return $hex;
+    }
 }
+
+# .SYNOPSIS
+#     PBKDF2 Password String Hashing Class.
+# .DESCRIPTION
+#     when a user inputs a password, instead of storing the password in cleartext, we hash the password and store the username and hash pair in the database table.
+#     When the user logs in, we hash the password sent and compare it to the hash connected with the provided username.
+# .EXAMPLE
+#     ## Usage Example:
+#
+#     # STEP 1. Create Hash and Store it somewhere secure.
+#     [byte[]]$hashBytes = [PasswordHash]::new("MypasswordString").ToArray();
+#     [xconvert]::BytesToHex($hashBytes) | Out-File $ReallySecureFilePath;
+#     $(Get-Item $ReallySecureFilePath).Encrypt();
+#
+#     # STEP 2. Check Password against a Stored hash.
+#     [byte[]]$hashBytes = [xconvert]::BytesFromHex($(Get-Content $ReallySecureFilePath));
+#     $hash = [PasswordHash]::new($hashBytes);
+#     if(!$hash.Verify("newly entered password")) { throw [System.UnauthorizedAccessException]::new() };
+# .NOTES
+#     https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
+class PasswordHash {
+    [byte[]]$hash # The pbkdf2 Hash
+    [byte[]]$salt
+    [ValidateNotNullOrEmpty()][int]hidden $SaltSize = 16
+    [ValidateNotNullOrEmpty()][int]hidden $HashSize = 20 # 20 bytes length is 160 bits
+    [ValidateNotNullOrEmpty()][int]hidden $HashIter = 10000 # Number of pbkdf2 iterations
+
+    PasswordHash([string]$passw0rd) {
+        $this.salt = [byte[]]::new($this.SaltSize) # todo: Not tested yet but maybe I could use [CryptoBase]::GetNewSalt($SaltSize) as the default salt
+        [void][System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes($this.salt)
+        $this.hash = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($passw0rd, $this.salt, $this.HashIter).GetBytes($this.HashSize)
+    }
+    PasswordHash([byte[]]$hashBytes) {
+        $this.hash = [byte[]]::new($this.HashSize)
+        $this.salt = [byte[]]::new($this.SaltSize)
+        [void][Array]::Copy($hashBytes, 0, $this.salt, 0, $this.SaltSize)
+        [void][Array]::Copy($hashBytes, $this.SaltSize, $this.hash, 0, $this.HashSize)
+    }
+    PasswordHash([byte[]]$salt, [byte[]]$hash) {
+        $this.hash = [byte[]]::new($this.HashSize)
+        $this.salt = [byte[]]::new($this.SaltSize)
+        [void][Array]::Copy($salt, 0, $this.salt, 0, $this.SaltSize)
+        [void][Array]::Copy($hash, 0, $this.hash, 0, $this.HashSize)
+    }
+    [byte[]]ToArray() {
+        [byte[]]$hashBytes = [byte[]]::new($this.SaltSize + $this.HashSize);
+        [void][Array]::Copy($this.salt, 0, $hashBytes, 0, $this.SaltSize);
+        [void][Array]::Copy($this.hash, 0, $hashBytes, $this.SaltSize, $this.HashSize)
+        return $hashBytes;
+    }
+    [byte[]]GetSalt() {
+        return $this.salt.Clone();
+    }
+    [byte[]]GetHash() {
+        return $this.hash.Clone();
+    }
+    [bool]Verify([string]$passw0rd) {
+        [byte[]]$test = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($passw0rd, $this.salt, $this.HashIter).GetBytes($this.HashSize); [bool]$rs = $true;
+        for ($i = 0; $i -lt $this.HashSize; $i++) {
+            $rs = $rs -and $(if ($test[$i] -ne $this.hash[$i]) { $false }else { $true })
+        }
+        return $rs
+    }
+}
+#endregion PasswordManager
 
 #region    FipsHMACSHA256
 # .SYNOPSIS
@@ -1947,181 +2118,6 @@ class FipsHmacSha256 : System.Security.Cryptography.HMAC {
 }
 #endregion FipsHMACSHA256
 
-
-# .SYNOPSIS
-#     PBKDF2 Password String Hashing Class.
-# .DESCRIPTION
-#     when a user inputs a password, instead of storing the password in cleartext, we hash the password and store the username and hash pair in the database table.
-#     When the user logs in, we hash the password sent and compare it to the hash connected with the provided username.
-# .EXAMPLE
-#     ## Usage Example:
-#
-#     # STEP 1. Create Hash and Store it somewhere secure.
-#     [byte[]]$hashBytes = [PasswordHash]::new("MypasswordString").ToArray();
-#     [xconvert]::BytesToHex($hashBytes) | Out-File $ReallySecureFilePath;
-#     $(Get-Item $ReallySecureFilePath).Encrypt();
-#
-#     # STEP 2. Check Password against a Stored hash.
-#     [byte[]]$hashBytes = [xconvert]::BytesFromHex($(Get-Content $ReallySecureFilePath));
-#     $hash = [PasswordHash]::new($hashBytes);
-#     if(!$hash.Verify("newly entered password")) { throw [System.UnauthorizedAccessException]::new() };
-# .NOTES
-#     https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
-class PasswordHash {
-    [byte[]]$hash # The pbkdf2 Hash
-    [byte[]]$salt
-    [ValidateNotNullOrEmpty()][int]hidden $SaltSize = 16
-    [ValidateNotNullOrEmpty()][int]hidden $HashSize = 20 # 20 bytes length is 160 bits
-    [ValidateNotNullOrEmpty()][int]hidden $HashIter = 10000 # Number of pbkdf2 iterations
-
-    PasswordHash([string]$passw0rd) {
-        $this.salt = [byte[]]::new($this.SaltSize) # todo: Not tested yet but maybe I could use [CryptoBase]::GetNewSalt($SaltSize) as the default salt
-        [void][System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes($this.salt)
-        $this.hash = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($passw0rd, $this.salt, $this.HashIter).GetBytes($this.HashSize)
-    }
-    PasswordHash([byte[]]$hashBytes) {
-        $this.hash = [byte[]]::new($this.HashSize)
-        $this.salt = [byte[]]::new($this.SaltSize)
-        [void][Array]::Copy($hashBytes, 0, $this.salt, 0, $this.SaltSize)
-        [void][Array]::Copy($hashBytes, $this.SaltSize, $this.hash, 0, $this.HashSize)
-    }
-    PasswordHash([byte[]]$salt, [byte[]]$hash) {
-        $this.hash = [byte[]]::new($this.HashSize)
-        $this.salt = [byte[]]::new($this.SaltSize)
-        [void][Array]::Copy($salt, 0, $this.salt, 0, $this.SaltSize)
-        [void][Array]::Copy($hash, 0, $this.hash, 0, $this.HashSize)
-    }
-    [byte[]]ToArray() {
-        [byte[]]$hashBytes = [byte[]]::new($this.SaltSize + $this.HashSize);
-        [void][Array]::Copy($this.salt, 0, $hashBytes, 0, $this.SaltSize);
-        [void][Array]::Copy($this.hash, 0, $hashBytes, $this.SaltSize, $this.HashSize)
-        return $hashBytes;
-    }
-    [byte[]]GetSalt() {
-        return $this.salt.Clone();
-    }
-    [byte[]]GetHash() {
-        return $this.hash.Clone();
-    }
-    [bool]Verify([string]$passw0rd) {
-        [byte[]]$test = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($passw0rd, $this.salt, $this.HashIter).GetBytes($this.HashSize); [bool]$rs = $true;
-        for ($i = 0; $i -lt $this.HashSize; $i++) {
-            $rs = $rs -and $(if ($test[$i] -ne $this.hash[$i]) { $false }else { $true })
-        }
-        return $rs
-    }
-}
-
-#region    OTPKIT
-class OTPKIT {
-    [string] $key = ""
-
-    static [string] CreateHOTP([string]$SECRET, [int]$Phone) {
-        return [OTPKIT]::CreateHOTP($phone, [OTPKIT]::GetOtp($SECRET))
-    }
-
-    static [string] CreateHOTP([int]$phone, [string]$otp) {
-        return [OTPKIT]::CreateHOTP($phone, $otp, 5)
-    }
-    static [string] CreateHOTP([int]$phone, [string]$otp, [int]$expiresAfter) {
-        $ttl = $expiresAfter * 60 * 1000
-        $expires = (Get-Date).AddMilliseconds($ttl).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-        $bytes = [byte[]]::new(16)
-        [System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes($bytes)
-        $salt = [BitConverter]::ToString($bytes) -replace '-'
-        $data = "$phone.$otp.$expires.$salt"
-        Write-Host "data: " -NoNewline -ForegroundColor Green; Write-Host "$data" -ForegroundColor Blue
-        $hashBase = [FipsHmacSha256]::new().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($data))
-        $hash = "$hashBase.$expires.$salt"
-        #TODO: Implement the SMS sending function here
-        return $hash
-    }
-    static [bool] VerifyHOTP([string]$otp, [int]$phone, [string]$hash) {
-        if (-not $hash -match "\.") {
-            return $false
-        }
-
-        $hashValue, $expires, $salt = $hash -split "\."
-
-        $now = (Get-Date).Ticks / 10000
-        if ($now -gt [double]$expires) {
-            return $false
-        }
-        $data = "$phone.$otp.$expires.$salt"
-        Write-Host "data: " -NoNewline -ForegroundColor Green; Write-Host "$data" -ForegroundColor Blue
-        $newCalculatedHash = [FipsHmacSha256]::new().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($data))
-
-        if ($newCalculatedHash -eq $hashValue) {
-            return $true
-        }
-        return $false
-    }
-
-    static [string] ParseOtpUrl([string]$otpURL) {
-        # $otpURL can be decrypted text
-        if (-not [System.Uri]::IsWellFormedUriString("$otpURL", "Absolute") -or $otpURL -notmatch "^otpauth://") { Write-Host "The decrypted text is not a valid OTP URL" "Error" ; $script:FileBrowser.Dispose() ; exit 1 }
-        $parseOtpUrl =[scriptblock]::Create("[System.Web.HttpUtility]::ParseQueryString(([uri]::new('$otpURL')).Query)").Invoke()
-        $otpType = $([uri]$otpURL).Host
-        if ($otpType -eq "hotp") { Write-Warning "TOTP is only supported" }
-        if ($otpType -eq "totp" ) { $otpType = "$otpType=" }
-        $otpPeriod = if (-not [string]::IsNullOrEmpty($parseOtpUrl["period"])) { $parseOtpUrl["period"] } else { 30 }
-        $otpDigits = if (-not [string]::IsNullOrEmpty($parseOtpUrl["digits"])) { $parseOtpUrl["digits"] } else { 6 }
-        $otpSecret = $parseOtpUrl["secret"]
-        return [OTPKIT]::GetOtp("$otpSecret", $otpDigits, "$otpPeriod")
-    }
-
-    static [string] GetOtp([string]$SECRET) {
-        return [OTPKIT]::GetOtp($SECRET, 4, "5")
-    }
-    static [string] GetOtp([string]$SECRET, [int]$LENGTH, [string]$WINDOW) {
-        $hmac = New-Object -TypeName System.Security.Cryptography.HMACSHA1
-        $hmac.key = $([OTPKIT]::ConvertBase32ToHex($SECRET.ToUpper())) -replace '^0x', '' -split "(?<=\G\w{2})(?=\w{2})" | ForEach-Object { [Convert]::ToByte( $_, 16 ) }
-        $timeSpan =  $(New-TimeSpan -Start (Get-Date -Year 1970 -Month 1 -Day 1 -Hour 0 -Minute 0 -Second 0) -End (Get-Date).ToUniversalTime()).TotalSeconds
-        $rndHash = $hmac.ComputeHash([byte[]][BitConverter]::GetBytes([Convert]::ToInt64([Math]::Floor($timeSpan/$WINDOW))))
-        $toffset = $rndhash[($rndHash.Length-1)] -band 0xf
-        $fullOTP = ($rndhash[$toffset] -band 0x7f) * [math]::pow(2, 24)
-        $fullOTP += ($rndHash[$toffset + 1] -band 0xff) * [math]::pow(2, 16)
-        $fullOTP += ($rndHash[$toffset + 2] -band 0xff) * [math]::pow(2, 8)
-        $fullOTP += ($rndHash[$toffset + 3] -band 0xff)
-
-        $modNumber = [math]::pow(10, $LENGTH)
-        $otp = $fullOTP % $modNumber
-        $otp = $otp.ToString("0" * $LENGTH)
-        return $otp
-    }
-    static [string] ConvertBase32ToHex([string]$base32) {
-        $base32chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        $bits = "";
-        $hex = "";
-
-        for ($i = 0; $i -lt $base32.Length; $i++) {
-            $val = $base32chars.IndexOf($base32.Chars($i));
-            $binary = [Convert]::ToString($val, 2)
-            $str = $binary.ToString();
-            $len = 5
-            $pad = '0'
-            if (($len + 1) -ge $str.Length) {
-                while (($len - 1) -ge $str.Length) {
-                    $str = ($pad + $str)
-                }
-            }
-            $bits += $str
-        }
-
-        for ($i = 0; $i+4 -le $bits.Length; $i+=4) {
-            $chunk = $bits.Substring($i, 4)
-            # Write-Host $chunk
-            $intChunk = [Convert]::ToInt32($chunk, 2)
-            $hexChunk = '{0:x}' -f $([int]$intChunk)
-            # Write-Host $hexChunk
-            $hex = $hex + $hexChunk
-        }
-        return $hex;
-    }
-}
-#endregion OTPKIT
-
-#endregion _Passwords
 
 #region    VaultStuff
 # A managed credential object. Makes it easy to protect, convert, save and stuff ..
@@ -6843,7 +6839,7 @@ class Config {
         return $dict
     }
     [void] SetRemote([uri]$GistUri, [string]$fileName) {
-        $l = [GitHub]::ParseGistUri($GistUri)
+        $l = [GitHub]::ParseGistUri($GistUri); [GitHub]::user = [User]::new($l.UserName)
         $this.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files.$fileName.raw_url)
     }
     [PsObject] Import() {
