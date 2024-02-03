@@ -475,6 +475,16 @@ class CryptoBase {
     static [bool] IsBase64String([string]$base64) {
         return $(try { [void][Convert]::FromBase64String($base64); $true } catch { $false })
     }
+    static [bool] IsValidAES([System.Security.Cryptography.Aes]$aes) {
+        return [bool]$(try { [CryptoBase]::CheckProps($aes); $? } catch { $false })
+    }
+    static [void] CheckProps([System.Security.Cryptography.Aes]$Aes) {
+        $MissingProps = @(); $throw = $false
+        Write-Verbose "$([CryptoBase]::caller) [+] Checking Encryption Properties ... $(('Mode','Padding', 'keysize', 'BlockSize') | ForEach-Object { if ($null -eq $Aes.Algo.$_) { $MissingProps += $_ } };
+            if ($MissingProps.Count -eq 0) { "Done. All AES Props are Good." } else { $throw = $true; "System.ArgumentNullException: $([string]::Join(', ', $MissingProps)) cannot be null." }
+        )"
+        if ($throw) { throw [System.ArgumentNullException]::new([string]::Join(', ', $MissingProps)) }
+    }
     static [string] GetResolvedPath([string]$Path) {
         return [CryptoBase]::GetResolvedPath($((Get-Variable ExecutionContext).Value.SessionState), $Path)
     }
@@ -1528,13 +1538,14 @@ class GitHub {
         return $web_session
     }
     static [void] SetToken() {
-        [GitHub]::SetToken([xconvert]::ToString((Read-Host -Prompt "Paste/write your Github api token" -AsSecureString)), $(Read-Host -Prompt "Paste/write your Password (To encrypt the token. Do Not forget it!)" -AsSecureString))
+        [GitHub]::SetToken([xconvert]::ToString((Read-Host -Prompt "[GitHub] Paste/write your api token" -AsSecureString)), $(Read-Host -Prompt "[GitHub] Paste/write a Password to encrypt the token" -AsSecureString))
     }
     static [void] SetToken([string]$token, [securestring]$password) {
         if (![IO.File]::Exists([GitHub]::TokenFile)) { New-Item -Type File -Path ([GitHub]::TokenFile) -Force | Out-Null }
         [IO.File]::WriteAllText([GitHub]::TokenFile, [convert]::ToBase64String([AesGCM]::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
     }
     static [securestring] GetToken() {
+        $sectoken = $null; $_c = [AesGCM]::caller; [AesGCM]::caller = '[GitHub]'
         if ([string]::IsNullOrWhiteSpace((Get-Content ([GitHub]::TokenFile) -ErrorAction Ignore))) {
             Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -ForegroundColor Green
             [GitHub]::SetToken()
@@ -1544,8 +1555,20 @@ class GitHub {
         } else {
             throw [System.Exception]::New("Unable to read token file!")
         }
-        Write-Host "[GitHub] Input password to use your token." -ForegroundColor Green
-        return [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())))))
+        try {
+            $sectoken = [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString(
+                    [AesGCM]::Decrypt(
+                        [Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())),
+                        $(Read-Host -Prompt "[GitHub] Input password to use your token" -AsSecureString)
+                    )
+                )
+            )
+        } catch {
+            throw $_
+        } finally {
+            [AesGCM]::caller = $_c
+        }
+        return $sectoken
     }
     static [PsObject] GetUserInfo([string]$UserName) {
         if ([string]::IsNullOrWhiteSpace([GitHub]::user.Name)) { [GitHub]::createSession() }
@@ -3479,6 +3502,9 @@ class Shuffl3r {
 #     # On recieving PC:
 #     $dec = [AesGcm]::Decrypt([convert]::FromBase64String($secmessage), (Read-Host -AsSecureString -Prompt "Decryption Password"), 4)
 #     echo ([System.Text.Encoding]::UTF8.GetString($dec)) # should be: S3crEt message...
+# .NOTES
+#  Todo: Find a working/cross-platform way to protect bytes (Like DPAPI for windows but better) then
+#  add static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [bool]$Protect, [string]$Compression, [int]$iterations)
 class AesGCM : CryptoBase {
     # static hidden [byte[]]$_salt = [convert]::FromBase64String("qmkmopealodukpvdiexiianpnnutirid");
     static hidden [EncryptionScope] $Scope = [EncryptionScope]::User
@@ -3512,12 +3538,11 @@ class AesGCM : CryptoBase {
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData) {
         return [AesGCM]::Encrypt($bytes, $Password, $Salt, $associatedData, $null, 1);
     }
-    # static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [bool]$Protect, [string]$Compression, [int]$iterations)
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [string]$Compression, [int]$iterations) {
         [int]$IV_SIZE = 0; Set-Variable -Name IV_SIZE -Scope Local -Visibility Private -Option Private -Value 12
         [int]$TAG_SIZE = 0; Set-Variable -Name TAG_SIZE -Scope Local -Visibility Private -Option Private -Value 16
         [string]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value $([convert]::ToBase64String([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32)));
-        [System.IntPtr]$th = [System.IntPtr]::new(0);
+        [System.IntPtr]$th = [System.IntPtr]::new(0); if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
         Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
         try {
             $_bytes = $bytes;
@@ -3534,9 +3559,6 @@ class AesGCM : CryptoBase {
                 ) Done" -ForegroundColor Yellow
             }
         } catch {
-            if ($_.FullyQualifiedErrorId -eq "AuthenticationTagMismatchException") {
-                Write-Warning "Wrong password"
-            }
             throw $_
         } finally {
             [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($th);
@@ -3630,7 +3652,7 @@ class AesGCM : CryptoBase {
             }
         } catch {
             if ($_.FullyQualifiedErrorId -eq "AuthenticationTagMismatchException") {
-                Write-Warning "Wrong password"
+                Write-Host "$([AesGCM]::caller) Wrong password" -ForegroundColor Yellow
             }
             throw $_
         } finally {
@@ -3700,7 +3722,7 @@ class AesCng : CryptoBase {
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [securestring]$Password, [byte[]]$Salt, [int]$iterations) {
         if ($null -eq $Bytes) { throw [System.ArgumentNullException]::new('bytes', 'Bytes Value cannot be null.') }
-        $_bytes = $Bytes;
+        $_bytes = $Bytes; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesCng]::caller = '[AesCng]' }
         for ($i = 1; $i -lt $iterations + 1; $i++) {
             Write-Host "$([AesCng]::caller) [+] Encryption [$i/$iterations] ...$(
                 $_bytes = [AesCng]::Encrypt($_bytes, $Password, $Salt)
@@ -3746,7 +3768,7 @@ class AesCng : CryptoBase {
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$salt, [int]$iterations) {
         if ($null -eq $bytes) { throw [System.ArgumentNullException]::new('bytes', 'Bytes Value cannot be null.') }
-        $_bytes = $bytes;
+        $_bytes = $bytes; if ([string]::IsNullOrWhiteSpace([AesCng]::caller)) { [AesCng]::caller = '[AesCng]' }
         for ($i = 1; $i -lt $iterations + 1; $i++) {
             Write-Host "$([AesCng]::caller) [+] Decryption [$i/$iterations] ...$(
                 $_bytes = [AesCng]::Decrypt($_bytes, $Password, $salt)
@@ -3773,16 +3795,6 @@ class AesCng : CryptoBase {
         Set-Variable -Name DEcrBytes -Scope Local -Visibility Private -Option Private -Value $($CryptoProvider.CreateDecryptor().TransformFinalBlock($_Bytes, 0, $_Bytes.Length))
         $CryptoProvider.Clear(); $CryptoProvider.Dispose();
         return $DEcrBytes
-    }
-    static [bool] IsValid([System.Security.Cryptography.Aes]$aes) {
-        return [bool]$(try { [AesCng]::CheckProps($aes); $? } catch { $false })
-    }
-    static [void] CheckProps([AesCng]$AesCng) {
-        $MissingProps = @(); $throw = $false
-        Write-Verbose "[+] Checking Encryption Properties ... $(('Mode','Padding', 'keysize', 'BlockSize') | ForEach-Object { if ($null -eq $AesCng.Algo.$_) { $MissingProps += $_ } };
-            if ($MissingProps.Count -eq 0) { "Done. All AES Props are Good." } else { $throw = $true; "System.ArgumentNullException: $([string]::Join(', ', $MissingProps)) cannot be null." }
-        )"
-        if ($throw) { throw [System.ArgumentNullException]::new([string]::Join(', ', $MissingProps)) }
     }
 }
 #endregion AesCng
@@ -4579,7 +4591,7 @@ Class ChaCha20 : CryptoBase {
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [securestring]$Password, [byte[]]$Salt, [int]$iterations) {
         [byte[]]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32));
-        $_bytes = $bytes;
+        $_bytes = $bytes; if ([string]::IsNullOrWhiteSpace([ChaCha20]::caller)) { [ChaCha20]::caller = '[ChaCha20]' }
         for ($i = 1; $i -lt $iterations + 1; $i++) {
             Write-Host "$([ChaCha20]::caller) [+] Encryption [$i/$iterations] ...$(
                 # Generate a random IV for each iteration:
@@ -4622,7 +4634,7 @@ Class ChaCha20 : CryptoBase {
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [securestring]$Password, [byte[]]$Salt, [int]$iterations) {
         [byte[]]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32));
-        $_bytes = $bytes;
+        $_bytes = $bytes; if ([string]::IsNullOrWhiteSpace([ChaCha20]::caller)) { [ChaCha20]::caller = '[ChaCha20]' }
         for ($i = 1; $i -lt $iterations + 1; $i++) {
             Write-Host "$([ChaCha20]::caller) [+] Decryption [$i/$iterations] ...$(
                 $bytes = $null; $IV = $null
@@ -5810,8 +5822,10 @@ $prompt
         [CipherTron]::Tmp.vars.Set('Response', $BotIntro); $this.RecordChat()
         [CipherTron]::Tmp.vars.Set('SetStage_Complete', $IsComplete);
     }
-    [void] endSession() {
+    [void] EndSession() {
         # Todo: Should work like exit but Instead you go back to a menu showing availble sessions
+        # cleanup cache:
+        # $this.DeleteConfigs()
     }
     [void] SaveSession() {
         [CipherTron]::ChatSession.Save()
@@ -5826,9 +5840,10 @@ $prompt
     [void] SetConfigs([string]$ConfigFile) { $this.SetConfigs($ConfigFile, $true) }
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
-        $defaultConfig = [CipherTron]::Get_default_Config()
-        if ($null -eq $this.Config) { $this.Config = [Config]::new($defaultConfig) }
-        $this.Config.File = [IO.FileInfo]::new($(if ([string]::IsNullOrWhiteSpace($ConfigFile)) {
+        [AesGCM]::caller = "[$([type]::GetTypeArray($this).Name)]"
+        $defaultConfig = [CipherTron]::Get_default_Config();
+        if ($null -eq $this.Config) { $this.Config = [Config]::new($defaultConfig); $this.Config.UsageHelp = [CipherTron]::Get_UsageHelp($this) }
+        $this.Config.File = [CipherTron]::GetUnResolvedPath($(if ([string]::IsNullOrWhiteSpace($ConfigFile)) {
                     [IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $this.Config.FileName)
                 } else {
                     $ConfigFile
@@ -5836,21 +5851,16 @@ $prompt
             )
         )
         if ($null -ne $this.Config.GistUri) { $this.Config.SetRemote([uri]::New($this.Config.GistUri), $this.Config.FileName) }
-        if (![IO.File]::Exists($this.Config.File.FullName)) {
+        if (![IO.File]::Exists($this.Config.File)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
-                throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File.FullName)'")
+                throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File)'")
             }
-            $this.Config.File = New-Item -ItemType File -Path $this.Config.File.FullName
+            $this.Config.File = [string](New-Item -ItemType File -Path $this.Config.File)
         }
-        if ($null -ne $this.Config.Remote) {
-            [IO.File]::WriteAllText($this.Config.File.FullName, $(Invoke-WebRequest $this.Config.Remote -Verbose:$false).Content, [System.Text.Encoding]::UTF8)
-            Write-Verbose "Downloaded ConfigFile: $($this.Config.File.FullName)"
-        } else {
-            [IO.File]::WriteAllText($this.Config.File.FullName, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $defaultConfig)), [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()))), [System.Text.Encoding]::UTF8)
-            Write-Verbose "Created New ConfigFile: $($this.Config.File.FullName)"
-        }
-        Write-Host "[ciphertron] Load Config: ReadAllText $($this.Config.File.FullName) ..." -ForegroundColor Green
-        [void]$this.Config.Import($this.Config.File.FullName)
+        Write-Host "[ciphertron] Create New ConfigFile: $($this.Config.File)" -ForegroundColor Cyan
+        [IO.File]::WriteAllText($this.Config.File, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $defaultConfig)), [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()))), [System.Text.Encoding]::UTF8)
+        Write-Host "[ciphertron] Load Config: ReadAllText $($this.Config.File) ..." -ForegroundColor Green
+        $this.Config::caller = "[$([type]::GetTypeArray($this).Name)]"; [void]$this.Config.Import($this.Config.File)
         #+++ Set commands and their aliases:
         # param([CipherTron]$bot)
         $Commands = [Ordered]@{
@@ -5879,7 +5889,7 @@ $prompt
         }
         $Commands.keys | ForEach-Object { $this.Presets.Add([PresetCommand]::new("$_", $Commands[$_])) }
         $($this.Config.Cmd_Aliases | Get-Member -Type NoteProperty).Name | ForEach-Object {
-            [string]$CommandName = $_; [string[]]$aliasNames = $this.Config.Cmd_Aliases.$_
+            [string]$CommandName = $_; [string[]]$aliasNames = $this.Config.Cmd_Aliases.$_[0]
             if ($null -eq $aliasNames) { Write-Verbose "[ciphertron] Load Config: Skipped Load_Alias_Names('$CommandName', `$aliases). Reason: `$null -eq `$aliases"; Continue }
             if ($null -eq $this.presets.$CommandName) {
                 Write-Verbose "[ciphertron] Load Config: Skipped Load_Alias_Names('`$CommandName', `$aliases). Reason: No CipherTron Command named '$CommandName'."
@@ -5911,16 +5921,52 @@ $prompt
         #+++ Ctrl get completion
         Set-PSReadLineKeyHandler -Key 'Ctrl+g' -BriefDescription OpenAICli -LongDescription "Calls Open AI on the current buffer" -ScriptBlock $([scriptblock]::Create("param(`$key, `$arg) (`$line, `$cursor) = (`$null,`$null); [CipherTron]::Complete([ref]`$line, [ref]`$cursor);"))
     }
+    [void] EditConfig() {
+        if ($null -eq $this.Config) {
+            throw 'Start Ciphertron first'
+        }; [AesGCM]::caller = '[ciphertron]'
+        $config_file = $this.Get_Config_Path()
+        if (![IO.File]::Exists($config_file)) {
+            New-Item -Type File -Path $config_file
+            #Export current config to the file
+        }
+        Write-Verbose "Editing $config_file ..."
+        code $config_file
+    }
+    [void] SaveConfig() {
+        # save changes to config file
+        if (![IO.File]::Exists($this.Config.File)) {
+            throw [FileNotFoundException]::new('Config file not found')
+        }
+        $this.Config::caller = "[$([type]::GetTypeArray($this).Name)]";
+        $caller = $this.Config::caller; $this.Config.File | Remove-Item -ErrorAction Ignore
+        Write-Host "$caller Save current Configs..." -ForegroundColor Green
+        [IO.File]::WriteAllText($this.Config.File, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes($this.Config.ToJson()), [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()))), [System.Text.Encoding]::UTF8)
+        Write-Host "$caller Import saved Configs..." -ForegroundColor Green
+        [void]$this.Config.Import($this.Config.File)
+    }
+    [void] SyncConfig() {
+        # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
+        # $b = [ciphertron]::new()
+        # $defaultConfig = [CipherTron]::Get_default_Config(); $b.Config.Cmd_Aliases = $defaultConfig.Cmd_Aliases; $b.Config.UsageHelp = [CipherTron]::Get_UsageHelp($b)
+        # if ($null -ne $this.Config.Remote) {
+        #     [IO.File]::WriteAllText($this.Config.File, $(Invoke-WebRequest $this.Config.Remote -Verbose:$false).Content, [System.Text.Encoding]::UTF8)
+        #     Write-Host "[ciphertron] Downloaded Config: $($this.Config.File)" -ForegroundColor Cyan
+        # }
+    }
     [bool] DeleteConfigs() {
         return [bool]$(
             try {
-                Remove-Item $this.Config.File.FullName -Force | Out-Null;
-                [GitHub]::GetTokenFile() | Split-Path | Remove-Item -Recurse -Force;
+                $configFiles = ([GitHub]::GetTokenFile() | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File
+                $configFiles.Foreach({ Remove-Item -Path $_ -Force -Verbose });
                 $true
             } catch { $false }
         )
     }
     static [hashtable] Get_default_Config() {
+        return [CipherTron]::Get_default_Config($null)
+    }
+    static [hashtable] Get_default_Config([CipherTron]$bot) {
         $defaultConfig = @{
             FileName      = 'Config.enc' # Config is stored locally but it's contents will always be encrypted.
             GistUri       = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
@@ -5945,37 +5991,33 @@ $prompt
             LogOfflineErr = $false # If true then chatlogs will include results like OfflineNoAns.
             ThrowNoApiKey = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
             ChatDescrptn  = "The following is a conversation of $([CipherTron]::ChatSession.ChatLog.Sendr) with an A.I cryptography assistant named $([CipherTron]::ChatSession.ChatLog.Recvr). The assistant is a helpful, creative, clever security expert and extremely experienced in cryptography and PowerShell Scripting.`n"
-            UsageHelp     = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
+            UsageHelp     = [CipherTron]::Get_UsageHelp($bot)
             Bot_data_Path = [CipherTron]::Get_dataPath()
             # Default aliases for Preset commands:
             # Note: Make sure each Key has its own match in $this.Presets.keys, otherwise it won't work.
             Cmd_Aliases   = [Ordered]@{
-                exit          = ('close', 'bye')
-                help          = ('view usage', '--help')
-                hash          = ('create hash', 'hash this')
-                sign          = ('sign this', 'Create a new signature')
-                encrypt       = ('encrypt this', 'encipher')
-                decrypt       = ('decrypt this', 'decipher')
-                EditConfig    = ('edit config', 'settings')
-                SetConfigs    = ('resfresh config', 'Load config')
-                ToggleOffline = ('Offline Mode', 'toggle Offline')
-                SavetoImage   = ('Save to Image', 'hide in Image')
-                NewPassword   = ('new password', 'new-password')
+                exit          = ('close', 'bye'), 'Closes the chat session'
+                help          = ('view usage', '--help'), 'Used to view this help message'
+                hash          = ('create hash', 'hash this'), 'Used to hash a string'
+                sign          = ('sign this', 'Create a new signature'), 'Used to hash a string'
+                encrypt       = ('encrypt this', 'encipher'), 'Used to encrypt stuff with multiple algorithms'
+                decrypt       = ('decrypt this', 'decipher'), 'Used to decrypt stuff with multiple algorithms'
+                EditConfig    = ('edit config', 'settings'), 'Used to view and edit bot config file'
+                SetConfigs    = ('resfresh config', 'Load config'), 'Used to set/save config file'
+                ToggleOffline = ('Offline Mode', 'toggle Offline'), 'Used to change chatmode to offline'
+                SavetoImage   = ('Save to Image', 'hide in Image'), 'Used for steganography stuff'
+                NewPassword   = ('new password', 'new-password'), 'Used to generate new password'
             }
         }
         return $defaultConfig
     }
-    [void] EditConfig() {
-        if ($null -eq $this.Config) {
-            throw 'Start Ciphertron first'
+    static [string] Get_UsageHelp([CipherTron]$bot) {
+        $helpStr = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
+        if ($null -ne $bot) {
+            $helpStr += "`n`nPreset Commands:`n"
+            $helpStr += $($bot.Config.Cmd_Aliases.Keys.ForEach({ [PSCustomObject]@{ Command = $_; Aliases = $bot.Config.Cmd_Aliases[$_][0]; Description = $bot.Config.Cmd_Aliases[$_][1] } }) | Out-String).Replace("{", '(').Replace("}", ')')
         }
-        $config_file = $this.Get_Config_Path()
-        if (![IO.File]::Exists($config_file)) {
-            New-Item -Type File -Path $config_file
-            #Export current config to the file
-        }
-        Write-Verbose "Editing $config_file ..."
-        code $config_file
+        return $helpStr
     }
     static [string] Get_dataPath() {
         return [CipherTron]::Get_dataPath('CipherTron', ([ChatLog]::new().Recvr + '_Chat').Trim()).FullName
@@ -5989,7 +6031,7 @@ $prompt
     static hidden [void] Complete([ref]$line, [ref]$cursor) {
         # Used for a code completion Shortcut
         [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState($line, $cursor);
-        # Warning: Not ready yet: the fact that a new bot has to be created every time is not cool
+        # Warning: Not ready yet: the fact that a new bot has to be created every time is not cool ie: It will prompt for apikeys & stuff etc ...
         $bot = [CipherTron]::new(); if (!$bot.HasApiKey()) {
             # TODO: Add A GUI to set api key
             throw 'Please Set the api key first and try again'
@@ -6019,15 +6061,16 @@ $prompt
         $bn = [CipherTron]::banners[(Get-Random (0..($bc-1)))]
         [System.Text.Encoding]::UTF8.GetString($bn) | Write-Host -ForegroundColor Green
         [void][cli]::Write("            Making Cryptography Easy and Fun", [System.ConsoleColor]::Green, $true, $false)
+        [void][System.Console]::WriteLine()
     }
     [void] ShowMenu() {
         if ($null -eq [CipherTron]::ConfigUri) {
             if ($null -eq $this.Config) { $this.SetConfigs() }
             [CipherTron]::ConfigUri = $this.Config.Remote
         }
-        if (![IO.File]::Exists($this.Config.File.FullName)) {
+        if (![IO.File]::Exists($this.Config.File)) {
             if ([CipherTron]::useverbose) { "[+] Get your latest configs .." | Write-Host -ForegroundColor Magenta }
-            [NetworkManager]::DownloadFile([CipherTron]::ConfigUri, $this.Config.File.FullName)
+            [NetworkManager]::DownloadFile([CipherTron]::ConfigUri, $this.Config.File)
         }
         [CipherTron]::WriteBanner()
         # code for menu goes here ...
@@ -6788,8 +6831,9 @@ class CommandLineParser {
 }
 
 class Config {
-    [ValidateNotNullOrEmpty()][uri] $Remote # usually a gist uri
-    [ValidateNotNullOrEmpty()][IO.FileInfo] $File
+    static hidden [string] $caller = '[Config]'
+    [uri] $Remote # usually a gist uri
+    [string] $File
     Config() {
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
         $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
@@ -6848,7 +6892,7 @@ class Config {
         return $array
     }
     [string] ToJson() {
-        return [string]($this | Select-Object -ExcludeProperty count | ConvertTo-Json)
+        return [string]($this | Select-Object -ExcludeProperty count | ConvertTo-Json -Depth 3)
     }
     [System.Collections.Specialized.OrderedDictionary] ToOrdered() {
         $dict = [System.Collections.Specialized.OrderedDictionary]::new(); $Keys = $this.PsObject.Properties.Where({ $_.Membertype -like "*Property" }).Name
@@ -6861,9 +6905,6 @@ class Config {
         $l = [GitHub]::ParseGistUri($GistUri); [GitHub]::user = [User]::new($l.UserName)
         $this.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files.$fileName.raw_url)
     }
-    [void] Import() {
-        $this.Import($this.File.FullName)
-    }
     [void] Import([string]$FilePath) {
         $this.Import($FilePath, [System.Text.Encoding]::UTF8)
     }
@@ -6874,11 +6915,12 @@ class Config {
         [ValidateNotNullOrEmpty()][System.Text.Encoding]$Encoding = $Encoding
         [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
         if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [AesGCM]::ValidateCompression($Compression) }
+        if (![string]::IsNullOrWhiteSpace($Compression)) { [AesGCM]::ValidateCompression($Compression) };
+        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [Config]::caller }
         $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.File]::ReadAllText($FilePath, $Encoding)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
         # JSON FORMATTED CONFIG FILE By default
         $ob = ConvertFrom-Json -InputObject ([System.Text.Encoding]::UTF8.GetString($da))
-        $ob | Get-Member -Type NoteProperty | Select-Object Name | ForEach-Object {
+        $ob | Get-Member -Type NoteProperty | Select-Object Name | Where-Object { $_.Name -notin @('count') } | ForEach-Object {
             $key = $_.Name; $val = $ob.$key; $this.Set($key, $val);
         }
     }
