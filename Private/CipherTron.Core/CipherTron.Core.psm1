@@ -322,6 +322,7 @@ class EncodingBase : System.Text.ASCIIEncoding {
 
 #region    CryptoBase
 class CryptoBase {
+    static hidden [string] $caller
     [ValidateNotNull()][byte[]]hidden $_salt
     [ValidateNotNull()][byte[]]hidden $_bytes
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope
@@ -470,6 +471,9 @@ class CryptoBase {
             $STR = $STR.Substring(0, $maxLength);
         }
         return $STR;
+    }
+    static [bool] IsBase64String([string]$base64) {
+        return $(try { [void][Convert]::FromBase64String($base64); $true } catch { $false })
     }
     static [string] GetResolvedPath([string]$Path) {
         return [CryptoBase]::GetResolvedPath($((Get-Variable ExecutionContext).Value.SessionState), $Path)
@@ -1535,10 +1539,12 @@ class GitHub {
             Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -ForegroundColor Green
             [GitHub]::SetToken()
             Write-Host "[GitHub] Good, now let's use the token :)" -ForegroundColor DarkGreen
+        } elseif ([CipherTron]::IsBase64String([IO.File]::ReadAllText([GitHub]::TokenFile))) {
+            Write-Host "[GitHub] Encrypted token found in file: $([GitHub]::TokenFile)" -ForegroundColor DarkGreen
         } else {
-            Write-Host "[GitHub] encrypted token found in file: $([GitHub]::TokenFile)" -ForegroundColor DarkGreen
+            throw [System.Exception]::New("Unable to read token file!")
         }
-        Write-Host "[GitHub] Input password to decrypt your token." -ForegroundColor Green
+        Write-Host "[GitHub] Input password to use your token." -ForegroundColor Green
         return [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())))))
     }
     static [PsObject] GetUserInfo([string]$UserName) {
@@ -3517,7 +3523,7 @@ class AesGCM : CryptoBase {
             $_bytes = $bytes;
             $aes = $null; Set-Variable -Name aes -Scope Local -Visibility Private -Option Private -Value $([ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke());
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                Write-Verbose "[+] Encryption [$i/$iterations] ...$(
+                Write-Host "$([AesGCM]::caller) [+] Encryption [$i/$iterations] ...$(
                     # if ($Protect) { $_bytes = [xconvert]::ToProtected($_bytes, $Salt, [EncryptionScope]::User) }
                     # Generate a random IV for each iteration:
                     [byte[]]$IV = $null; Set-Variable -Name IV -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($password), $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes($IV_SIZE));
@@ -3525,7 +3531,7 @@ class AesGCM : CryptoBase {
                     $Encrypted = [byte[]]::new($_bytes.Length);
                     [void]$aes.Encrypt($IV, $_bytes, $Encrypted, $tag, $associatedData);
                     $_bytes = [Shuffl3r]::Combine([Shuffl3r]::Combine($Encrypted, $IV, $Password), $tag, $Password);
-                ) Done"
+                ) Done" -ForegroundColor Yellow
             }
         } catch {
             if ($_.FullyQualifiedErrorId -eq "AuthenticationTagMismatchException") {
@@ -3561,7 +3567,7 @@ class AesGCM : CryptoBase {
         $ba = [byte[]]::New($streamReader.Length);
         [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
         [void]$streamReader.Close();
-        Write-Verbose "[+] Begin file encryption:"
+        Write-Verbose "$([AesGCM]::caller) Begin file encryption:"
         Write-Verbose "[-]  File    : $File"
         Write-Verbose "[-]  OutFile : $OutPath"
         [byte[]]$_salt = [AesGCM]::GetDerivedSalt($Password);
@@ -3606,13 +3612,13 @@ class AesGCM : CryptoBase {
         [int]$IV_SIZE = 0; Set-Variable -Name IV_SIZE -Scope Local -Visibility Private -Option Private -Value 12
         [int]$TAG_SIZE = 0; Set-Variable -Name TAG_SIZE -Scope Local -Visibility Private -Option Private -Value 16
         [string]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value $([convert]::ToBase64String([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32)));
-        [System.IntPtr]$th = [System.IntPtr]::new(0);
+        [System.IntPtr]$th = [System.IntPtr]::new(0); if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
         Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
         try {
             $_bytes = if (![string]::IsNullOrWhiteSpace($Compression)) { [xconvert]::ToDecompressed($bytes, $Compression) } else { $bytes }
             $aes = [ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke()
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                Write-Verbose "[+] Decryption [$i/$iterations] ...$(
+                Write-Host "$([AesGCM]::caller) [+] Decryption [$i/$iterations] ...$(
                     # if ($UnProtect) { $_bytes = [xconvert]::ToUnProtected($_bytes, $Salt, [EncryptionScope]::User) }
                     # Split the real encrypted bytes from nonce & tags then decrypt them:
                     ($b, $n1) = [Shuffl3r]::Split($_bytes, $Password, $TAG_SIZE);
@@ -3620,7 +3626,7 @@ class AesGCM : CryptoBase {
                     $Decrypted = [byte[]]::new($b.Length);
                     $aes.Decrypt($n2, $b, $n1, $Decrypted, $associatedData);
                     $_bytes = $Decrypted;
-                ) Done"
+                ) Done" -ForegroundColor Yellow
             }
         } catch {
             if ($_.FullyQualifiedErrorId -eq "AuthenticationTagMismatchException") {
@@ -3653,7 +3659,7 @@ class AesGCM : CryptoBase {
         $ba = [byte[]]::New($streamReader.Length);
         [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
         [void]$streamReader.Close();
-        Write-Verbose "[+] Begin file decryption:"
+        Write-Verbose "$([AesGCM]::caller) Begin file decryption:"
         Write-Verbose "[-]  File    : $File"
         Write-Verbose "[-]  OutFile : $OutPath"
         [byte[]]$_salt = [AesGCM]::GetDerivedSalt($Password);
@@ -3696,9 +3702,9 @@ class AesCng : CryptoBase {
         if ($null -eq $Bytes) { throw [System.ArgumentNullException]::new('bytes', 'Bytes Value cannot be null.') }
         $_bytes = $Bytes;
         for ($i = 1; $i -lt $iterations + 1; $i++) {
-            Write-Verbose "[+] Encryption [$i/$iterations] ...$(
+            Write-Host "$([AesCng]::caller) [+] Encryption [$i/$iterations] ...$(
                 $_bytes = [AesCng]::Encrypt($_bytes, $Password, $Salt)
-            ) Done."
+            ) Done." -ForegroundColor Yellow
         };
         return $_bytes;
     }
@@ -3742,9 +3748,9 @@ class AesCng : CryptoBase {
         if ($null -eq $bytes) { throw [System.ArgumentNullException]::new('bytes', 'Bytes Value cannot be null.') }
         $_bytes = $bytes;
         for ($i = 1; $i -lt $iterations + 1; $i++) {
-            Write-Verbose "[+] Decryption [$i/$iterations] ...$(
+            Write-Host "$([AesCng]::caller) [+] Decryption [$i/$iterations] ...$(
                 $_bytes = [AesCng]::Decrypt($_bytes, $Password, $salt)
-            ) Done"
+            ) Done" -ForegroundColor Yellow
         };
         return $_bytes
     }
@@ -4575,11 +4581,11 @@ Class ChaCha20 : CryptoBase {
         [byte[]]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32));
         $_bytes = $bytes;
         for ($i = 1; $i -lt $iterations + 1; $i++) {
-            Write-Verbose "[+] Encryption [$i/$iterations] ...$(
+            Write-Host "$([ChaCha20]::caller) [+] Encryption [$i/$iterations] ...$(
                 # Generate a random IV for each iteration:
                 [byte[]]$IV = $null; Set-Variable -Name IV -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::Tostring($password), $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(16));
                 $_bytes = [Shuffl3r]::Combine([Chacha20]::Encrypt($_bytes, $Key, $IV), $IV, $Password)
-            ) Done"
+            ) Done" -ForegroundColor Yellow
         }
         return $_bytes
     }
@@ -4618,11 +4624,11 @@ Class ChaCha20 : CryptoBase {
         [byte[]]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32));
         $_bytes = $bytes;
         for ($i = 1; $i -lt $iterations + 1; $i++) {
-            Write-Verbose "[+] Decryption [$i/$iterations] ...$(
+            Write-Host "$([ChaCha20]::caller) [+] Decryption [$i/$iterations] ...$(
                 $bytes = $null; $IV = $null
                 ($bytes, $IV) = [Shuffl3r]::Split($_bytes, $Password, 16);
                 $_bytes = [Chacha20]::Decrypt($bytes, $Key, $IV)
-            ) Done"
+            ) Done" -ForegroundColor Yellow
         }
         return $_bytes
     }
@@ -5843,7 +5849,7 @@ $prompt
             [IO.File]::WriteAllText($this.Config.File.FullName, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $defaultConfig)), [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()))), [System.Text.Encoding]::UTF8)
             Write-Verbose "Created New ConfigFile: $($this.Config.File.FullName)"
         }
-        Write-Host "[ciphertron] Load Config: ReadAllText $($this.Config.File.FullName) ..." -NoNewline -ForegroundColor Green
+        Write-Host "[ciphertron] Load Config: ReadAllText $($this.Config.File.FullName) ..." -ForegroundColor Green
         [void]$this.Config.Import($this.Config.File.FullName)
         #+++ Set commands and their aliases:
         # param([CipherTron]$bot)
@@ -5874,9 +5880,9 @@ $prompt
         $Commands.keys | ForEach-Object { $this.Presets.Add([PresetCommand]::new("$_", $Commands[$_])) }
         $($this.Config.Cmd_Aliases | Get-Member -Type NoteProperty).Name | ForEach-Object {
             [string]$CommandName = $_; [string[]]$aliasNames = $this.Config.Cmd_Aliases.$_
-            if ($null -eq $aliasNames) { Write-Verbose "Load Config: Skipped Load_Alias_Names('$CommandName', `$aliases). Reason: `$null -eq `$aliases"; Continue }
+            if ($null -eq $aliasNames) { Write-Verbose "[ciphertron] Load Config: Skipped Load_Alias_Names('$CommandName', `$aliases). Reason: `$null -eq `$aliases"; Continue }
             if ($null -eq $this.presets.$CommandName) {
-                Write-Verbose "Load Config: Skipped Load_Alias_Names('`$CommandName', `$aliases). Reason: No CipherTron Command named '$CommandName'."
+                Write-Verbose "[ciphertron] Load Config: Skipped Load_Alias_Names('`$CommandName', `$aliases). Reason: No CipherTron Command named '$CommandName'."
             } else {
                 $this.presets.$CommandName.aliases = [System.Management.Automation.AliasAttribute]::new($aliasNames)
             }
@@ -5900,13 +5906,19 @@ $prompt
         $vars.Set('OgWindowTitle', $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle)
         $vars.Set('WhatIf_IsPresent', [bool]$((Get-Variable WhatIfPreference).Value.IsPresent))
         [cli]::textValidator = [scriptblock]::Create({ param($npt) if ([CipherTron]::Tmp.vars.ChatIsOngoing -and ([string]::IsNullOrWhiteSpace($npt))) { throw [System.ArgumentNullException]::new('InputText!') } })
-        Write-Host " Done." -ForegroundColor Green
+        Write-Host "[ciphertron] Load Config: Done." -ForegroundColor Green
 
         #+++ Ctrl get completion
         Set-PSReadLineKeyHandler -Key 'Ctrl+g' -BriefDescription OpenAICli -LongDescription "Calls Open AI on the current buffer" -ScriptBlock $([scriptblock]::Create("param(`$key, `$arg) (`$line, `$cursor) = (`$null,`$null); [CipherTron]::Complete([ref]`$line, [ref]`$cursor);"))
     }
     [bool] DeleteConfigs() {
-        return [bool]$(try { Remove-Item $this.Config.File.FullName -Force | Out-Null; [GitHub]::GetTokenFile() | Split-Path | Remove-Item -Recurse -Force; $true } catch { $false })
+        return [bool]$(
+            try {
+                Remove-Item $this.Config.File.FullName -Force | Out-Null;
+                [GitHub]::GetTokenFile() | Split-Path | Remove-Item -Recurse -Force;
+                $true
+            } catch { $false }
+        )
     }
     static [hashtable] Get_default_Config() {
         $defaultConfig = @{
@@ -5962,8 +5974,8 @@ $prompt
             New-Item -Type File -Path $config_file
             #Export current config to the file
         }
-        Write-Debug "Editing $config_file ..."
-        nvim $config_file
+        Write-Verbose "Editing $config_file ..."
+        code $config_file
     }
     static [string] Get_dataPath() {
         return [CipherTron]::Get_dataPath('CipherTron', ([ChatLog]::new().Recvr + '_Chat').Trim()).FullName
