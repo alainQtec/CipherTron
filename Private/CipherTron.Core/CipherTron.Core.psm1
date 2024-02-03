@@ -1524,8 +1524,7 @@ class GitHub {
         return $web_session
     }
     static [void] SetToken() {
-        $t = Read-Host -Prompt "Paste/write your Github api token" -MaskInput
-        [GitHub]::SetToken($t, $(Read-Host -Prompt "Paste/write your Password (To encrypt the token. Do Not forget it!)" -AsSecureString))
+        [GitHub]::SetToken([xconvert]::ToString((Read-Host -Prompt "Paste/write your Github api token" -AsSecureString)), $(Read-Host -Prompt "Paste/write your Password (To encrypt the token. Do Not forget it!)" -AsSecureString))
     }
     static [void] SetToken([string]$token, [securestring]$password) {
         if (![IO.File]::Exists([GitHub]::TokenFile)) { New-Item -Type File -Path ([GitHub]::TokenFile) -Force | Out-Null }
@@ -1709,11 +1708,12 @@ class PasswordManager {
         return [PasswordManager]::GetPassword($ThrowOnFailure);
     }
     [securestring] static GetPassword([bool]$ThrowOnFailure) {
-        $Password = $null; Set-Variable -Name Password -Scope Local -Visibility Private -Option Private -Value ($(Get-Variable Host).value.UI.PromptForCredential('CipherTron', "Please Enter Your Password", $(whoami), $Env:COMPUTERNAME).Password);
-        if ($ThrowOnFailure -and ($null -eq $Password -or $([string]::IsNullOrWhiteSpace([xconvert]::ToString($Password))))) {
-            throw [InvalidPasswordException]::new("Please Provide a Password that isn't Null and not a WhiteSpace.", $Password, [System.ArgumentNullException]::new("Password"))
+        $pswd = [SecureString]::new();
+        Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value ($(Get-Variable Host).value.UI.PromptForCredential('PasswordManager', "Please Enter Your Password", $(whoami), $Env:COMPUTERNAME).Password);
+        if ($ThrowOnFailure -and ($null -eq $pswd -or $([string]::IsNullOrWhiteSpace([xconvert]::ToString($pswd))))) {
+            throw [InvalidPasswordException]::new("Please Provide a Password that isn't Null and not a WhiteSpace.", $pswd, [System.ArgumentNullException]::new("Password"))
         }
-        return $Password
+        return $pswd;
     }
     # Method to validate the password: This just checks if its a good enough password
     static [bool] ValidatePassword([SecureString]$password) {
