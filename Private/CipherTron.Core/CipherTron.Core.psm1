@@ -319,7 +319,6 @@ class EncodingBase : System.Text.ASCIIEncoding {
     }
 }
 
-
 #region    CryptoBase
 class CryptoBase {
     static hidden [string] $caller
@@ -630,7 +629,6 @@ class XConvert : System.ComponentModel.TypeConverter {
         return [string][xconvert]::ToCompressed([System.Convert]::ToBase64String([XConvert]::BytesFromObject($CustomObject)));
     }
     static [string] ToString([byte[]]$Bytes) {
-        # We could do: $CharCodes = [int[]]$Bytes; [xconvert]::Tostring($CharCodes); but lots of data is lost when decoding back ...
         return [string][System.Convert]::ToBase64String($Bytes);
     }
     static [string[]] ToString([int[]]$CharCodes) {
@@ -954,7 +952,7 @@ class XConvert : System.ComponentModel.TypeConverter {
         }
         return $objs
     }
-    [PSCustomObject] static ToPSObject([System.Object]$Obj) {
+    [PsCustomObject] static ToPSObject([System.Object]$Obj) {
         $PSObj = [PSCustomObject]::new();
         $Obj | Get-Member -MemberType Properties | ForEach-Object {
             $Name = $_.Name; $PSObj | Add-Member -Name $Name -MemberType NoteProperty -Value $(if ($null -ne $Obj.$Name) { if ("Deserialized" -in (($Obj.$Name | Get-Member).TypeName.Split('.') | Sort-Object -Unique)) { $([xconvert]::ToPSObject($Obj.$Name)) } else { $Obj.$Name } } else { $null })
@@ -1099,7 +1097,7 @@ class XConvert : System.ComponentModel.TypeConverter {
             $bytes = [byte[]]$obj
         } else {
             # Serialize the Object:
-            $bytes = [XConvert]::ToSerialized($obj)
+            $bytes = [XConvert]::Serialize($obj)
         }
         if ($protect) {
             # Protecteddata: https://docs.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata.unprotect?
@@ -1107,55 +1105,14 @@ class XConvert : System.ComponentModel.TypeConverter {
         }
         return $bytes
     }
-    static [byte[]] ToSerialized($Obj) {
-        return [XConvert]::ToSerialized($Obj, $false)
+    static [byte[]] Serialize($Obj) {
+        return [Text.Encoding]::UTF8.GetBytes([System.Management.Automation.PSSerializer]::Serialize($Obj))
     }
-    static [byte[]] ToSerialized($Obj, [bool]$Force) {
-        $bytes = $null
-        # Todo: Run tests to see if [System.Management.Automation.PSSerializer]::Serialize() can do better.
-        # When deseri~zr is using: [System.Management.Automation.PSSerializer]::Deserialize() or [System.Management.Automation.PSSerializer]::DeserializeAsList()
-        try {
-            # Serialize the object using binaryFormatter: https://docs.microsoft.com/en-us/dotnet/api/system.runtime.serialization.formatters.binary.binaryformatter?
-            $formatter = New-Object -TypeName System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
-            $stream = New-Object -TypeName System.IO.MemoryStream
-            $formatter.Serialize($stream, $Obj) # Serialise the graph
-            $bytes = $stream.ToArray(); $stream.Close(); $stream.Dispose()
-        } catch [System.Management.Automation.MethodInvocationException], [System.Runtime.Serialization.SerializationException] {
-            #Object can't be serialized, Lets try Marshalling: https://docs.microsoft.com/en-us/dotnet/api/System.Runtime.InteropServices.Marshal?
-            $TypeName = $obj.GetType().Name; $obj = $obj -as $TypeName
-            if ($obj -isnot [System.Runtime.Serialization.ISerializable] -and $TypeName -in ("securestring", "Pscredential", "CredManaged")) { throw [System.Management.Automation.MethodInvocationException]::new("Cannot serialize an unmanaged structure") }
-            if ($Force) {
-                # Import the System.Runtime.InteropServices.Marshal namespace
-                Add-Type -AssemblyName System.Runtime
-                [int]$size = [System.Runtime.InteropServices.Marshal]::SizeOf($obj); $bytes = [byte[]]::new($size);
-                [IntPtr]$ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($size);
-                [void][System.Runtime.InteropServices.Marshal]::StructureToPtr($obj, $ptr, $false);
-                [void][System.Runtime.InteropServices.Marshal]::Copy($ptr, $bytes, 0, $size);
-                [void][System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr); # Free the memory allocated for the serialized object
-            } else {
-                throw [System.Runtime.Serialization.SerializationException]::new("Serialization error. Make sure the object is marked with the [System.SerializableAttribute] or is Serializable.")
-            }
-        } catch {
-            throw $_.Exception
-        }
-        return $bytes
+    static [Object] Deserialize([byte[]]$data) {
+        return [System.Management.Automation.PSSerializer]::Deserialize([Text.Encoding]::UTF8.GetString($data))
     }
-    [Object[]] static ToDeserialized([byte[]]$data) {
-        $bf = [System.Runtime.Serialization.Formatters.Binary.BinaryFormatter]::new()
-        $ms = [System.IO.MemoryStream]::new(); $Obj = $null
-        $ms.Write($data, 0, $data.Length);
-        [void]$ms.Seek(0, [System.IO.SeekOrigin]::Begin);
-        try {
-            $Obj = [object]$bf.Deserialize($ms)
-        } catch [System.Management.Automation.MethodInvocationException], [System.Runtime.Serialization.SerializationException] {
-            $Obj = $ms.ToArray()
-        } catch {
-            throw $_.Exception
-        } finally {
-            $ms.Dispose(); $ms.Close()
-        }
-        # Output the deserialized object
-        return $Obj
+    static [Object[]] DeserializeAsList([byte[]]$data) {
+        return [System.Management.Automation.PSSerializer]::DeserializeAsList([Text.Encoding]::UTF8.GetString($data))
     }
     [System.Collections.BitArray] static BinaryFromString([string]$string) {
         [string]$BinStR = [string]::Empty;
@@ -1513,6 +1470,7 @@ class Base85 : EncodingBase {
 #endregion Base85
 
 
+
 #region    GitHub
 class GitHub {
     static $webSession
@@ -1633,7 +1591,7 @@ class GitHub {
     }
     static [bool] IsConnected() {
         $re = @{ true  = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
-        Write-Host "[Github] Testing Connection ... " -ForegroundColor Cyan -NoNewline
+        Write-Host "[Github] Testing Connection ... " -ForegroundColor Blue -NoNewline
         $cs = [NetworkManager]::TestConnection("github.com")
         $re = $re[$cs.ToString()]
         Write-Host $re.m -ForegroundColor $re.c
@@ -5493,7 +5451,7 @@ class CipherTron : CryptoBase {
         $this.Version = [CipherTron]::GetVersion()
         $this.Presets = [chatPresets]::new();
         [CipherTron]::Tmp = [chatTmp]::new();
-        [CipherTron]::ChatSession = [ChatSession]::new(); $this.SetConfigs();
+        [CipherTron]::ChatSession = [ChatSession]::new(); $this.SetConfigs(); $this.SaveConfig(); $this.ImportConfig()
         $this.PsObject.properties.add([psscriptproperty]::new('ConfigPath', [scriptblock]::Create({ return [CipherTron]::Get_Config_Path($this.Config.FileName) })))
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ return [CipherTron]::Get_dataPath() })))
         $this.PsObject.properties.add([psscriptproperty]::new('User', [scriptblock]::Create({ return [CipherTron]::ChatSession.User })))
@@ -5841,55 +5799,20 @@ $prompt
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
         [AesGCM]::caller = "[$([type]::GetTypeArray($this).Name)]"
-        $defaultConfig = [CipherTron]::Get_default_Config();
-        if ($null -eq $this.Config) { $this.Config = [Config]::new($defaultConfig); $this.Config.UsageHelp = [CipherTron]::Get_UsageHelp($this) }
-        $this.Config.File = [CipherTron]::GetUnResolvedPath($(if ([string]::IsNullOrWhiteSpace($ConfigFile)) {
-                    [IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $this.Config.FileName)
-                } else {
-                    $ConfigFile
-                }
-            )
-        )
-        if ($null -ne $this.Config.GistUri) { $this.Config.SetRemote([uri]::New($this.Config.GistUri), $this.Config.FileName) }
+        if ($null -eq $this.Config) { $this.Config = [Config]::new([CipherTron]::Get_default_Config()) }
+        if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [CipherTron]::GetUnResolvedPath($ConfigFile) }
         if (![IO.File]::Exists($this.Config.File)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
                 throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File)'")
             }
-            $this.Config.File = [string](New-Item -ItemType File -Path $this.Config.File)
+            Write-Host "[ciphertron] Create New ConfigFile: $($this.Config.File)" -ForegroundColor Blue
+            [void](New-Item -ItemType File -Path $this.Config.File)
         }
-        Write-Host "[ciphertron] Create New ConfigFile: $($this.Config.File)" -ForegroundColor Cyan
-        [IO.File]::WriteAllText($this.Config.File, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $defaultConfig)), [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()))), [System.Text.Encoding]::UTF8)
-        Write-Host "[ciphertron] Load Config: ReadAllText $($this.Config.File) ..." -ForegroundColor Green
-        $this.Config::caller = "[$([type]::GetTypeArray($this).Name)]"; [void]$this.Config.Import($this.Config.File)
-        #+++ Set commands and their aliases:
-        # param([CipherTron]$bot)
-        $Commands = [Ordered]@{
-            cls           = { [System.Console]::Clear() }
-            exit          = { $this._Exit($true) }
-            help          = { [void][cli]::write($this.Config.UsageHelp) }
-            hash          = { $this.User.Hash() }
-            sign          = { $this.User.Sign() }
-            encrypt       = { $this.User.Encrypt() }
-            decrypt       = { $this.User.Decrypt() }
-            EditConfig    = { $this.EditConfig() }
-            SetConfigs    = { $this.SetConfigs($false) }
-            ToggleOffline = { [CipherTron]::ToggleOffline() }
-            SavetoImage   = { [CipherTron]::SavetoImage() }
-            NewPassword   = { [CipherTron]::NewPassword() }
-            generateKey   = { [KeyManager]::generateKey() }
-            importKey     = { [KeyManager]::importKey() }
-            deleteKey     = { [KeyManager]::deleteKey() }
-            rotateKeys    = { [KeyManager]::rotateKeys() }
-            exportKey     = { [KeyManager]::exportKey() }
-            validateKey   = { [KeyManager]::validateKey() }
-            startSession  = { $this.Chat() }
-            endSession    = { $this.endSession() }
-            saveSession   = { $this.saveSession() }
-            loadSession   = { $this.loadSession() }
-        }
-        $Commands.keys | ForEach-Object { $this.Presets.Add([PresetCommand]::new("$_", $Commands[$_])) }
-        $($this.Config.Cmd_Aliases | Get-Member -Type NoteProperty).Name | ForEach-Object {
-            [string]$CommandName = $_; [string[]]$aliasNames = $this.Config.Cmd_Aliases.$_[0]
+        # Set_Preset_Commands and their aliases:
+        $Commands = $this.Get_default_Commands()
+        $Commands.keys | ForEach-Object {
+            $this.Presets.Add([PresetCommand]::new("$_", $Commands[$_][0]))
+            [string]$CommandName = $_; [string[]]$aliasNames = $Commands[$_][1]
             if ($null -eq $aliasNames) { Write-Verbose "[ciphertron] Load Config: Skipped Load_Alias_Names('$CommandName', `$aliases). Reason: `$null -eq `$aliases"; Continue }
             if ($null -eq $this.presets.$CommandName) {
                 Write-Verbose "[ciphertron] Load Config: Skipped Load_Alias_Names('`$CommandName', `$aliases). Reason: No CipherTron Command named '$CommandName'."
@@ -5898,7 +5821,7 @@ $prompt
             }
         }
         [cli]::preffix = $this.Config.emojis.Bot
-        #+++ Set_Tmp_variables: Set default variables and stores them in $this::Tmp.vars Make it way easier to clean & manage without worying about scopes and not dealing with global variables.
+        # Set_Tmp_variables: Set default variables and stores them in $this::Tmp.vars Make it way easier to clean & manage without worying about scopes and not dealing with global variables.
         $vars = [CipherTron]::Tmp.vars
         $vars.Set('Quick_Exit', $this.Config.Quick_Exit) #ie: if true, then no Questions asked, Just closes the damn thing.
         $vars.Set('Query', '')
@@ -5916,10 +5839,34 @@ $prompt
         $vars.Set('OgWindowTitle', $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle)
         $vars.Set('WhatIf_IsPresent', [bool]$((Get-Variable WhatIfPreference).Value.IsPresent))
         [cli]::textValidator = [scriptblock]::Create({ param($npt) if ([CipherTron]::Tmp.vars.ChatIsOngoing -and ([string]::IsNullOrWhiteSpace($npt))) { throw [System.ArgumentNullException]::new('InputText!') } })
-        Write-Host "[ciphertron] Load Config: Done." -ForegroundColor Green
-
         #+++ Ctrl get completion
         Set-PSReadLineKeyHandler -Key 'Ctrl+g' -BriefDescription OpenAICli -LongDescription "Calls Open AI on the current buffer" -ScriptBlock $([scriptblock]::Create("param(`$key, `$arg) (`$line, `$cursor) = (`$null,`$null); [CipherTron]::Complete([ref]`$line, [ref]`$cursor);"))
+    }
+    [System.Collections.Specialized.OrderedDictionary] Get_default_Commands() {
+        return [Ordered]@{
+            cls           = { [System.Console]::Clear() }, ('clear'), 'Clears screen'
+            exit          = { $this._Exit($true) }, ('close', 'bye'), 'Closes the chat session'
+            help          = { [void][cli]::write($this.Config.UsageHelp) }, ('view usage', '--help'), 'Used to view this help message'
+            hash          = { $this.User.Hash() }, ('create hash', 'hash this'), 'Used to hash a string'
+            sign          = { $this.User.Sign() }, ('sign this', 'Create a new signature'), 'Used to hash a string'
+            encrypt       = { $this.User.Encrypt() }, ('encrypt this', 'encipher'), 'Used to encrypt stuff with multiple algorithms'
+            decrypt       = { $this.User.Decrypt() }, ('decrypt this', 'decipher'), 'Used to decrypt stuff with multiple algorithms'
+            EditConfig    = { $this.EditConfig() }, ('edit config', 'settings'), 'Used to view and edit bot config file'
+            SetConfigs    = { $this.SetConfigs($false) }, ('resfresh config', 'Load config'), 'Used to set/save config file'
+            ToggleOffline = { [CipherTron]::ToggleOffline() }, ('Offline Mode', 'toggle Offline'), 'Used to change chatmode to offline'
+            SavetoImage   = { [CipherTron]::SavetoImage() }, ('Save to Image', 'hide in Image'), 'Used for steganography stuff'
+            NewPassword   = { [CipherTron]::NewPassword() }, ('new password', 'new-password'), 'Used to generate new password'
+            generateKey   = { [KeyManager]::generateKey() }, ('generate key'), ''
+            importKey     = { [KeyManager]::importKey() }, ('import key'), ''
+            deleteKey     = { [KeyManager]::deleteKey() }, ('delete key'), ''
+            rotateKeys    = { [KeyManager]::rotateKeys() }, ('rotate key'), ''
+            exportKey     = { [KeyManager]::exportKey() }, ('export key'), ''
+            validateKey   = { [KeyManager]::validateKey() }, ('validate key'), ''
+            startSession  = { $this.Chat() }, ('start session'), ''
+            endSession    = { $this.endSession() }, ('end session'), ''
+            saveSession   = { $this.saveSession() }, ('save session'), ''
+            loadSession   = { $this.loadSession() }, ('load session'), 'Loads existing session'
+        }
     }
     [void] EditConfig() {
         if ($null -eq $this.Config) {
@@ -5934,25 +5881,25 @@ $prompt
         code $config_file
     }
     [void] SaveConfig() {
-        # save changes to config file
-        if (![IO.File]::Exists($this.Config.File)) {
-            throw [FileNotFoundException]::new('Config file not found')
-        }
         $this.Config::caller = "[$([type]::GetTypeArray($this).Name)]";
-        $caller = $this.Config::caller; $this.Config.File | Remove-Item -ErrorAction Ignore
-        Write-Host "$caller Save current Configs..." -ForegroundColor Green
-        [IO.File]::WriteAllText($this.Config.File, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes($this.Config.ToJson()), [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()))), [System.Text.Encoding]::UTF8)
-        Write-Host "$caller Import saved Configs..." -ForegroundColor Green
-        [void]$this.Config.Import($this.Config.File)
+        Write-Host "$($this.Config::caller) Save current Configs..." -ForegroundColor Green
+        [IO.File]::WriteAllText($this.Config.File, [Base85]::Encode([AesGCM]::Encrypt($this.Config.ToByte(), [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()))), [System.Text.Encoding]::UTF8)
     }
-    [void] SyncConfig() {
-        # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        # $b = [ciphertron]::new()
-        # $defaultConfig = [CipherTron]::Get_default_Config(); $b.Config.Cmd_Aliases = $defaultConfig.Cmd_Aliases; $b.Config.UsageHelp = [CipherTron]::Get_UsageHelp($b)
+    [void] ImportConfig() {
         # if ($null -ne $this.Config.Remote) {
         #     [IO.File]::WriteAllText($this.Config.File, $(Invoke-WebRequest $this.Config.Remote -Verbose:$false).Content, [System.Text.Encoding]::UTF8)
-        #     Write-Host "[ciphertron] Downloaded Config: $($this.Config.File)" -ForegroundColor Cyan
+        #     Write-Host "[ciphertron] Downloaded Config: $($this.Config.File)" -ForegroundColor Blue
         # }
+        # if ([IO.File]::Exists($this.Config.File)) {
+        #     $this.ImportConfig([IO.FileInfo]::New($this.Config.File))
+        # }
+    }
+    [void] ImportConfig([IO.Fileinfo]$File) {
+        # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
+        # $b = [ciphertron]::new()
+        # $dc = [ciphertron]::Get_default_Config(); $b.Config.Cmd_Aliases = $dc.Cmd_Aliases; $b.Config.UsageHelp = [CipherTron]::Get_UsageHelp($b)
+        [void]$this.Config.Import($File.FullName)
+        Write-Host "$($this.Config::caller) Load Config: Done." -ForegroundColor Green
     }
     [bool] DeleteConfigs() {
         return [bool]$(
@@ -5964,11 +5911,10 @@ $prompt
         )
     }
     static [hashtable] Get_default_Config() {
-        return [CipherTron]::Get_default_Config($null)
-    }
-    static [hashtable] Get_default_Config([CipherTron]$bot) {
-        $defaultConfig = @{
+        $default_Config = @{
+            Remote        = ''
             FileName      = 'Config.enc' # Config is stored locally but it's contents will always be encrypted.
+            File          = ''
             GistUri       = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
             emojis        = @{ #ie: Use emojis as preffix to indicate messsage source.
                 Bot  = '{0} : ' -f ([System.Text.UTF8Encoding]::UTF8.GetString([byte[]](240, 159, 150, 173, 32)))
@@ -5991,33 +5937,16 @@ $prompt
             LogOfflineErr = $false # If true then chatlogs will include results like OfflineNoAns.
             ThrowNoApiKey = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
             ChatDescrptn  = "The following is a conversation of $([CipherTron]::ChatSession.ChatLog.Sendr) with an A.I cryptography assistant named $([CipherTron]::ChatSession.ChatLog.Recvr). The assistant is a helpful, creative, clever security expert and extremely experienced in cryptography and PowerShell Scripting.`n"
-            UsageHelp     = [CipherTron]::Get_UsageHelp($bot)
+            UsageHelp     = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
             Bot_data_Path = [CipherTron]::Get_dataPath()
-            # Default aliases for Preset commands:
-            # Note: Make sure each Key has its own match in $this.Presets.keys, otherwise it won't work.
-            Cmd_Aliases   = [Ordered]@{
-                exit          = ('close', 'bye'), 'Closes the chat session'
-                help          = ('view usage', '--help'), 'Used to view this help message'
-                hash          = ('create hash', 'hash this'), 'Used to hash a string'
-                sign          = ('sign this', 'Create a new signature'), 'Used to hash a string'
-                encrypt       = ('encrypt this', 'encipher'), 'Used to encrypt stuff with multiple algorithms'
-                decrypt       = ('decrypt this', 'decipher'), 'Used to decrypt stuff with multiple algorithms'
-                EditConfig    = ('edit config', 'settings'), 'Used to view and edit bot config file'
-                SetConfigs    = ('resfresh config', 'Load config'), 'Used to set/save config file'
-                ToggleOffline = ('Offline Mode', 'toggle Offline'), 'Used to change chatmode to offline'
-                SavetoImage   = ('Save to Image', 'hide in Image'), 'Used for steganography stuff'
-                NewPassword   = ('new password', 'new-password'), 'Used to generate new password'
-            }
         }
-        return $defaultConfig
-    }
-    static [string] Get_UsageHelp([CipherTron]$bot) {
-        $helpStr = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
-        if ($null -ne $bot) {
-            $helpStr += "`n`nPreset Commands:`n"
-            $helpStr += $($bot.Config.Cmd_Aliases.Keys.ForEach({ [PSCustomObject]@{ Command = $_; Aliases = $bot.Config.Cmd_Aliases[$_][0]; Description = $bot.Config.Cmd_Aliases[$_][1] } }) | Out-String).Replace("{", '(').Replace("}", ')')
-        }
-        return $helpStr
+        $default_Config.UsageHelp += "`n`nPreset Commands:`n"
+        $default_Config.UsageHelp += $([CipherTron]::Get_default_Commands().Keys.ForEach({ [PSCustomObject]@{ Command = $_; Aliases = $default_Config.Cmd_Aliases[$_][0]; Description = $default_Config.Cmd_Aliases[$_][1] } }) | Out-String).Replace("{", '(').Replace("}", ')')
+        $default_Config.File = [CipherTron]::GetUnResolvedPath([IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $default_Config.FileName))
+        $l = [GitHub]::ParseGistUri([uri]::New($default_Config.GistUri)); [GitHub]::user = [User]::new($l.UserName)
+        Write-Host "[Github] Get Remote uri for config file ..." -ForegroundColor Blue
+        $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files."$($default_Config.FileName)".raw_url)
+        return $default_Config
     }
     static [string] Get_dataPath() {
         return [CipherTron]::Get_dataPath('CipherTron', ([ChatLog]::new().Recvr + '_Chat').Trim()).FullName
@@ -6541,8 +6470,6 @@ class PSObjectHelper {
     }
 }
 
-# [PSObjectHelper]::ListProperties($ob)
-
 class ChatSessionManager {
     [ValidateNotNull()][int]$MaxSessions = 100
     [ValidateNotNullOrEmpty()][string]$ArchiveFolder
@@ -6572,7 +6499,7 @@ class ChatSessionManager {
         [ValidateNotNullOrEmpty()][string]$FilePath = $FilePath
         $lines = [IO.File]::ReadAllLines($FilePath, [system.text.encoding]::UTF8)
         ($usr, $id) = $lines[0].Split(':')
-        $ofb = [XConvert]::ToDeserialized([convert]::FromBase64String([xconvert]::ToDeCompressed($lines[1])))
+        $ofb = [XConvert]::Deserialize([convert]::FromBase64String([xconvert]::ToDeCompressed($lines[1])))
         if (!$ofb.User.name.Substring(0, 5).Equals($usr)) { throw 'User names do not match!' }
         $Out = [ChatSession]::new([User]::new($ofb.User.Name, $ofb.User.Password, $ofb.User.PublicKey, $ofb.User.privatekey), [ChatLog]::new([ChatObject[]]$ofb.chatlog.Messages))
         $Out.ChatUid = [guid]::new($id); $out.file = [IO.Fileinfo]::new($FilePath)
@@ -6854,7 +6781,7 @@ class Config {
     [void] Add([hashtable]$table) {
         [ValidateNotNullOrEmpty()][hashtable]$table = $table
         $Keys = $table.Keys | Where-Object { !$this.Contains($_) -and ($_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType') }
-        foreach ($key in $Keys) { $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key] }
+        foreach ($key in $Keys) { $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key] -Force:$($key -in ('File', 'Remote')) }
     }
     [void] Add([hashtable[]]$items) {
         foreach ($item in $items) { $this.Add($item) }
@@ -6901,10 +6828,6 @@ class Config {
         }
         return $dict
     }
-    [void] SetRemote([uri]$GistUri, [string]$fileName) {
-        $l = [GitHub]::ParseGistUri($GistUri); [GitHub]::user = [User]::new($l.UserName)
-        $this.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files.$fileName.raw_url)
-    }
     [void] Import([string]$FilePath) {
         $this.Import($FilePath, [System.Text.Encoding]::UTF8)
     }
@@ -6923,6 +6846,9 @@ class Config {
         $ob | Get-Member -Type NoteProperty | Select-Object Name | Where-Object { $_.Name -notin @('count') } | ForEach-Object {
             $key = $_.Name; $val = $ob.$key; $this.Set($key, $val);
         }
+    }
+    [byte[]] ToByte() {
+        return [xconvert]::Serialize($this)
     }
     [string] ToString() {
         $r = $this.ToArray(); $s = ''
