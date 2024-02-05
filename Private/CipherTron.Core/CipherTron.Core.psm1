@@ -5799,7 +5799,7 @@ $prompt
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
         [AesGCM]::caller = "[$([type]::GetTypeArray($this).Name)]"
-        if ($null -eq $this.Config) { $this.Config = [Config]::new([CipherTron]::Get_default_Config()) }
+        if ($null -eq $this.Config) { $this.Config = [Config]::new($this.Get_default_Config()) }
         if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [CipherTron]::GetUnResolvedPath($ConfigFile) }
         if (![IO.File]::Exists($this.Config.File)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
@@ -5842,32 +5842,6 @@ $prompt
         #+++ Ctrl get completion
         Set-PSReadLineKeyHandler -Key 'Ctrl+g' -BriefDescription OpenAICli -LongDescription "Calls Open AI on the current buffer" -ScriptBlock $([scriptblock]::Create("param(`$key, `$arg) (`$line, `$cursor) = (`$null,`$null); [CipherTron]::Complete([ref]`$line, [ref]`$cursor);"))
     }
-    [System.Collections.Specialized.OrderedDictionary] Get_default_Commands() {
-        return [Ordered]@{
-            cls           = { [System.Console]::Clear() }, ('clear'), 'Clears screen'
-            exit          = { $this._Exit($true) }, ('close', 'bye'), 'Closes the chat session'
-            help          = { [void][cli]::write($this.Config.UsageHelp) }, ('view usage', '--help'), 'Used to view this help message'
-            hash          = { $this.User.Hash() }, ('create hash', 'hash this'), 'Used to hash a string'
-            sign          = { $this.User.Sign() }, ('sign this', 'Create a new signature'), 'Used to hash a string'
-            encrypt       = { $this.User.Encrypt() }, ('encrypt this', 'encipher'), 'Used to encrypt stuff with multiple algorithms'
-            decrypt       = { $this.User.Decrypt() }, ('decrypt this', 'decipher'), 'Used to decrypt stuff with multiple algorithms'
-            EditConfig    = { $this.EditConfig() }, ('edit config', 'settings'), 'Used to view and edit bot config file'
-            SetConfigs    = { $this.SetConfigs($false) }, ('resfresh config', 'Load config'), 'Used to set/save config file'
-            ToggleOffline = { [CipherTron]::ToggleOffline() }, ('Offline Mode', 'toggle Offline'), 'Used to change chatmode to offline'
-            SavetoImage   = { [CipherTron]::SavetoImage() }, ('Save to Image', 'hide in Image'), 'Used for steganography stuff'
-            NewPassword   = { [CipherTron]::NewPassword() }, ('new password', 'new-password'), 'Used to generate new password'
-            generateKey   = { [KeyManager]::generateKey() }, ('generate key'), ''
-            importKey     = { [KeyManager]::importKey() }, ('import key'), ''
-            deleteKey     = { [KeyManager]::deleteKey() }, ('delete key'), ''
-            rotateKeys    = { [KeyManager]::rotateKeys() }, ('rotate key'), ''
-            exportKey     = { [KeyManager]::exportKey() }, ('export key'), ''
-            validateKey   = { [KeyManager]::validateKey() }, ('validate key'), ''
-            startSession  = { $this.Chat() }, ('start session'), ''
-            endSession    = { $this.endSession() }, ('end session'), ''
-            saveSession   = { $this.saveSession() }, ('save session'), ''
-            loadSession   = { $this.loadSession() }, ('load session'), 'Loads existing session'
-        }
-    }
     [void] EditConfig() {
         if ($null -eq $this.Config) {
             throw 'Start Ciphertron first'
@@ -5896,8 +5870,6 @@ $prompt
     }
     [void] ImportConfig([IO.Fileinfo]$File) {
         # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        # $b = [ciphertron]::new()
-        # $dc = [ciphertron]::Get_default_Config(); $b.Config.Cmd_Aliases = $dc.Cmd_Aliases; $b.Config.UsageHelp = [CipherTron]::Get_UsageHelp($b)
         [void]$this.Config.Import($File.FullName)
         Write-Host "$($this.Config::caller) Load Config: Done." -ForegroundColor Green
     }
@@ -5910,7 +5882,7 @@ $prompt
             } catch { $false }
         )
     }
-    static [hashtable] Get_default_Config() {
+    [hashtable] Get_default_Config() {
         $default_Config = @{
             Remote        = ''
             FileName      = 'Config.enc' # Config is stored locally but it's contents will always be encrypted.
@@ -5940,13 +5912,39 @@ $prompt
             UsageHelp     = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
             Bot_data_Path = [CipherTron]::Get_dataPath()
         }
-        $default_Config.UsageHelp += "`n`nPreset Commands:`n"
-        $default_Config.UsageHelp += $([CipherTron]::Get_default_Commands().Keys.ForEach({ [PSCustomObject]@{ Command = $_; Aliases = $default_Config.Cmd_Aliases[$_][0]; Description = $default_Config.Cmd_Aliases[$_][1] } }) | Out-String).Replace("{", '(').Replace("}", ')')
+        $default_Config.UsageHelp += "`n`nPreset Commands:`n"; $commands = $this.Get_default_Commands()
+        $default_Config.UsageHelp += $($commands.Keys.ForEach({ [PSCustomObject]@{ Command = $_; Aliases = $commands[$_][1]; Description = $commands[$_][2] } }) | Out-String).Replace("{", '(').Replace("}", ')')
         $default_Config.File = [CipherTron]::GetUnResolvedPath([IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $default_Config.FileName))
         $l = [GitHub]::ParseGistUri([uri]::New($default_Config.GistUri)); [GitHub]::user = [User]::new($l.UserName)
         Write-Host "[Github] Get Remote uri for config file ..." -ForegroundColor Blue
         $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files."$($default_Config.FileName)".raw_url)
         return $default_Config
+    }
+    [System.Collections.Specialized.OrderedDictionary] Get_default_Commands() {
+        return [Ordered]@{
+            cls           = { [System.Console]::Clear() }, ('clear'), 'Clears screen'
+            exit          = { $this._Exit($true) }, ('close', 'bye'), 'Closes the chat session'
+            help          = { [void][cli]::write($this.Config.UsageHelp) }, ('view usage', '--help'), 'Used to view this help message'
+            hash          = { $this.User.Hash() }, ('create hash', 'hash this'), 'Used to hash a string'
+            sign          = { $this.User.Sign() }, ('sign this', 'Create a new signature'), 'Used to hash a string'
+            encrypt       = { $this.User.Encrypt() }, ('encrypt this', 'encipher'), 'Used to encrypt stuff with multiple algorithms'
+            decrypt       = { $this.User.Decrypt() }, ('decrypt this', 'decipher'), 'Used to decrypt stuff with multiple algorithms'
+            EditConfig    = { $this.EditConfig() }, ('edit config', 'settings'), 'Used to view and edit bot config file'
+            SetConfigs    = { $this.SetConfigs($false) }, ('resfresh config', 'Load config'), 'Used to set/save config file'
+            ToggleOffline = { [CipherTron]::ToggleOffline() }, ('Offline Mode', 'toggle Offline'), 'Used to change chatmode to offline'
+            SavetoImage   = { [CipherTron]::SavetoImage() }, ('Save to Image', 'hide in Image'), 'Used for steganography stuff'
+            NewPassword   = { [CipherTron]::NewPassword() }, ('new password', 'new-password'), 'Used to generate new password'
+            generateKey   = { [KeyManager]::generateKey() }, ('generate key'), ''
+            importKey     = { [KeyManager]::importKey() }, ('import key'), ''
+            deleteKey     = { [KeyManager]::deleteKey() }, ('delete key'), ''
+            rotateKeys    = { [KeyManager]::rotateKeys() }, ('rotate key'), ''
+            exportKey     = { [KeyManager]::exportKey() }, ('export key'), ''
+            validateKey   = { [KeyManager]::validateKey() }, ('validate key'), ''
+            startSession  = { $this.Chat() }, ('start session'), ''
+            endSession    = { $this.endSession() }, ('end session'), ''
+            saveSession   = { $this.saveSession() }, ('save session'), ''
+            loadSession   = { $this.loadSession() }, ('load session'), 'Loads existing session'
+        }
     }
     static [string] Get_dataPath() {
         return [CipherTron]::Get_dataPath('CipherTron', ([ChatLog]::new().Recvr + '_Chat').Trim()).FullName
