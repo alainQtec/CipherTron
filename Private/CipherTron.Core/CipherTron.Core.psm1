@@ -1540,7 +1540,7 @@ class GitHub {
     }
     static [PsObject] GetGist([uri]$Uri) {
         $l = [GitHub]::ParseGistUri($Uri)
-        return [GitHub]::GetGist($l.UserName, $l.GistId)
+        return [GitHub]::GetGist($l.Owner, $l.Id)
     }
     static [PsObject] GetGist([string]$UserName, [string]$GistId) {
         $t = [GitHub]::GetToken()
@@ -1577,17 +1577,50 @@ class GitHub {
         $response = Invoke-RestMethod -Uri $url -WebSession ([GitHub]::webSession) -Method Post -Body ($body | ConvertTo-Json) -Verbose:$false
         return $response
     }
+    static [PsObject] UpdateGist([GistFile]$gist, [string]$NewContent) {
+        return ''
+    }
     static [string] GetTokenFile() {
         if ([IO.File]::Exists([GitHub]::TokenFile)) {
             return [GitHub]::TokenFile
         }
         return [IO.Path]::Combine([cryptobase]::Get_dataPath('Github', 'clicache'), "token");
     }
-    static [PsCustomObject] ParseGistUri([uri]$GistUri) {
-        return [PsCustomObject]@{
-            UserName = $GistUri.Segments[1].Split('/')[0]
-            GistId   = $GistUri.Segments[-1]
-        }
+    static [GistFile] ParseGistUri([uri]$GistUri) {
+        $res = $null; $ogs = $GistUri.OriginalString
+        $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
+        $seg = $GistUri.Segments
+        $res = $(if ($IsRawUri) {
+                $name = $seg[-1]
+                $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
+                $rtri = $rtri.Remove($rtri.Length - 1)
+                $info = [GitHub]::GetGist([uri]::new($rtri))
+                $file = $info.files."$name"
+                [PsCustomObject]@{
+                    language = $file.language
+                    IsPublic = $info.IsPublic
+                    raw_url  = $file.raw_url
+                    Owner    = $info.owner.login
+                    type     = $file.type
+                    filename = $name
+                    size     = $file.size
+                    Id       = $seg[2].Replace('/', '')
+                }
+            } else {
+                # $info = [GitHub]::GetGist($GistUri)
+                [PsCustomObject]@{
+                    language = ''
+                    IsPublic = $null
+                    raw_url  = ''
+                    Owner    = $seg[1].Split('/')[0]
+                    type     = ''
+                    filename = ''
+                    size     = ''
+                    Id       = $seg[-1]
+                }
+            }
+        )
+        return [GistFile]::New($res)
     }
     static [PsObject] GetUserRepositories() {
         if ($null -eq [GitHub]::webSession) { [Github]::createSession() }
@@ -1601,7 +1634,7 @@ class GitHub {
 }
 
 class GistFile {
-    [ValidateNotNullOrEmpty()][string]$Name # with extention
+    [string]$Name
     [string]$language
     [string]$raw_url
     [bool]$IsPublic
@@ -1613,7 +1646,7 @@ class GistFile {
     GistFile([string]$filename) {
         $this.Name = $filename
     }
-    GistFile([psobject]$InputObject) {
+    GistFile([PsObject]$InputObject) {
         $this.language = $InputObject.language
         $this.IsPublic = $InputObject.IsPublic
         $this.raw_url = $InputObject.raw_url
@@ -1623,8 +1656,6 @@ class GistFile {
         $this.size = $InputObject.size
         $this.Id = $InputObject.Id
     }
-
-
     [string] ShowFileInfo() {
         return "File: $($this.Name)"
     }
@@ -5452,7 +5483,7 @@ class CipherTron : CryptoBase {
         $this.Version = [CipherTron]::GetVersion()
         $this.Presets = [chatPresets]::new();
         [CipherTron]::Tmp = [chatTmp]::new();
-        [CipherTron]::ChatSession = [ChatSession]::new(); $this.SetConfigs(); $this.SaveConfig(); $this.ImportConfig()
+        [CipherTron]::ChatSession = [ChatSession]::new(); $this.SetConfigs(); $this.SaveConfigs(); $this.ImportConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('ConfigPath', [scriptblock]::Create({ return [CipherTron]::Get_Config_Path($this.Config.FileName) })))
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ return [CipherTron]::Get_dataPath() })))
         $this.PsObject.properties.add([psscriptproperty]::new('User', [scriptblock]::Create({ return [CipherTron]::ChatSession.User })))
@@ -5502,7 +5533,7 @@ class CipherTron : CryptoBase {
                     }
                 }
             }
-            $this::Tmp.vars.ChatIsOngoing = $true
+            $this::Tmp.vars.set("ChatIsOngoing", $true)
             while ($this::Tmp.vars.ChatIsOngoing) { $this.ReadInput(); $this.GetResponse(); $this.RecordChat() }
         } catch {
             $this::Tmp.vars.Set("ExitCode", 1)
@@ -5853,22 +5884,19 @@ $prompt
         Write-Verbose "Editing $config_file ..."
         code $config_file
     }
-    [void] SaveConfig() {
+    [void] SaveConfigs() {
         [Config]::caller = "[$($this.GetType().Name)]"; $this.Config.Save()
     }
-    [void] ImportConfig() {
-        # if ($null -ne $this.Config.Remote) {
-        #     [IO.File]::WriteAllText($this.Config.File, $(Invoke-WebRequest $this.Config.Remote -Verbose:$false).Content, [System.Text.Encoding]::UTF8)
-        #     Write-Host "[ciphertron] Downloaded Config: $($this.Config.File)" -ForegroundColor Blue
-        # }
-        # if ([IO.File]::Exists($this.Config.File)) {
-        #     $this.ImportConfig([IO.FileInfo]::New($this.Config.File))
-        # }
+    [void] SyncConfigs() {
+        # Imports remote configs into current ones, then uploads the updated version to github gist
+        $this.ImportConfig($this.Config.Remote); $this.Config.Upload()
     }
-    [void] ImportConfig([IO.Fileinfo]$File) {
+    [void] ImportConfigs() {
+        [Config]::caller = "[$($this.GetType().Name)]"; [void]$this.Config.Import($this.Config.File)
+    }
+    [void] ImportConfigs([uri]$raw_uri) {
         # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        [void]$this.Config.Import($File.FullName)
-        Write-Host "$($this.Config::caller) Load Config: Done." -ForegroundColor Green
+        [Config]::caller = "[$($this.GetType().Name)]"; $this.Config.Import($raw_uri)
     }
     [bool] DeleteConfigs() {
         return [bool]$(
@@ -5914,7 +5942,7 @@ $prompt
         $default_Config.File = [CipherTron]::GetUnResolvedPath([IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $default_Config.FileName))
         $l = [GitHub]::ParseGistUri([uri]::New($default_Config.GistUri)); [GitHub]::user = [User]::new($l.UserName)
         Write-Host "[CipherTron] Get Remote gist uri for config ..." -ForegroundColor Blue
-        $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.UserName, $l.GistId).files."$($default_Config.FileName)".raw_url)
+        $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$($default_Config.FileName)".raw_url)
         Write-Host "[CipherTron] Get Remote gist uri Complete" -ForegroundColor Blue
         return $default_Config
     }
@@ -5943,6 +5971,10 @@ $prompt
             saveSession   = { $this.saveSession() }, ('save session', 'save chat'), 'Saves current chat session'
             loadSession   = { $this.loadSession() }, ('load session', 'import chat'), 'Loads existing chat session'
         }
+    }
+    static [string] NewPassword() {
+        #Todo: there should be like a small chat here to help the user generate the password
+        return [passwordmanager]::GeneratePassword()
     }
     static [string] Get_dataPath() {
         return [CipherTron]::Get_dataPath('CipherTron', ([ChatLog]::new().Recvr + '_Chat').Trim()).FullName
@@ -6821,41 +6853,73 @@ class Config {
         }
         return $dict
     }
-    [void] Import([String]$FilePath) {
-        [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
-        if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
-        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [Config]::caller }
-        $ob = $this.Read($FilePath)
-        $ob | Get-Member -Type NoteProperty | Select-Object Name | Where-Object { $_.Name -notin @('count') } | ForEach-Object {
-            $key = $_.Name; $val = $ob.$key; $this.Set($key, $val);
+    [void] Save() {
+        $pass = $null;
+        try {
+            Write-Host "$([Config]::caller) Save Config to file: $($this.File) ..."
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to encrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
+            Write-Host "$([Config]::caller) Save Config Complete"
+        } catch {
+            throw $_.Exeption
+        } finally {
+            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }
     }
-    [Object] Read([string]$FilePath) {
+    [void] Import([uri]$raw_uri) {
+        try {
+            $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [Config]::caller }
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
+            $this.Import([hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } }))
+        } catch {
+            throw $_.Exeption
+        } finally {
+            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
+        }
+    }
+    [void] Import([String]$FilePath) {
+        Write-Host "$([Config]::caller) Import Config: $FilePath ..." -ForegroundColor Green
+        $this.Import($this.Read($FilePath))
+        Write-Host "$([Config]::caller) Import Config Complete" -ForegroundColor Green
+    }
+    [void] Import([hashtable[]]$items) {
+        [ValidateNotNullOrEmpty()][hashtable[]]$items = $items
+        foreach ($item in $items) {
+            [ValidateNotNullOrEmpty()][hashtable]$item = $item
+            $Keys = $item.Keys | Where-Object { $_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType' }
+            foreach ($key in $Keys) {
+                $val = $item[$key]
+                if ($this.Contains($key)) {
+                    if ($null -ne $val) {
+                        $this.$key = $val
+                    }
+                } else {
+                    $this | Add-Member -MemberType NoteProperty -Name $key -Value $val -Force:$($key -in ('File', 'Remote'))
+                }
+            }
+        }
+    }
+    [void] Upload() {
+        if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [InvalidArgumentException]::new('remote') }
+        # $gisturi = 'https://gist.github.com/' + $this.Remote.Segments[2] + $this.Remote.Segments[2].replace('/', '')
+        # [GitHub]::UpdateGist($gisturi, $content)
+    }
+    [hashtable[]] Read([string]$FilePath) {
         $pass = $null; $cfg = $null
         try {
-            Write-Host "$([Config]::caller) Read Config file: $($this.File) ..."
+            [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
+            if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
+            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [Config]::caller }
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
-            $cfg = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode([IO.File]::ReadAllText($FilePath)), $pass)))
-            Write-Host "$([Config]::caller) Read Config Complete"
+            $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode([IO.File]::ReadAllText($FilePath)), $pass)))
+            $cfg = [hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } })
         } catch {
             throw $_.Exeption
         } finally {
             Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }
         return $cfg
-    }
-    [void] Save() {
-        $pass = $null;
-        try {
-            Write-Host "$([Config]::caller) Save bot Config to file: $($this.File) ..."
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to encrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
-            [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
-            Write-Host "$([Config]::caller) Save bot Config Complete"
-        } catch {
-            throw $_.Exeption
-        } finally {
-            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
-        }
     }
     [byte[]] ToByte() {
         return [xconvert]::Serialize($this)
