@@ -5490,7 +5490,7 @@ class CipherTron : CryptoBase {
         $this.PsObject.properties.add([psscriptproperty]::new('ChatUid', [scriptblock]::Create({ return [CipherTron]::ChatSession.ChatUid.ToString() })))
         $this.PsObject.properties.add([psscriptproperty]::new('ChatLog', [scriptblock]::Create({ return [CipherTron]::ChatSession.ChatLog })))
         $this.PsObject.properties.add([psscriptproperty]::new('Sessions', [scriptblock]::Create({ return @(Get-ChildItem ([ChatSessionManager]::GetSessionFolder()) -Filter "*.chat" | ForEach-Object { [ChatSession]::New($_.FullName) }) })))
-        $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ [NetworkManager]::caller = '[CipherTron]'; return ![NetworkManager]::TestConnection('google.com') })))
+        $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ [NetworkManager]::caller = '[CipherTron]'; return ![NetworkManager]::TestConnection('github.com') })))
     }
 
     [void] Chat() {
@@ -5639,8 +5639,8 @@ class CipherTron : CryptoBase {
     }
     [string] GetResponse([string]$npt, [gptOptions]$options) {
         [ValidateNotNullOrEmpty()][string]$npt = $npt; [ValidateNotNullOrEmpty()][gptOptions]$options = $options
-        if ($this.HasApiKey()) {
-            if (![CipherTron]::IsInteractive()) { throw 'Please set $env:OpenAIKey environment variable to your OpenAI API key. https://platform.openai.com/account/api-keys' }
+        if ($null -ne [CipherTron]::Tmp.vars.OpenAIKey) {
+            if (![CipherTron]::IsInteractive()) { throw 'Please run SetAPIkey() first. Get yours at: https://platform.openai.com/account/api-keys' }
             $this.SetAPIkey(); if ([CipherTron]::Tmp.vars.Finish_reason -eq 'Empty_API_key' -and [CipherTron]::Tmp.vars.OfflineMode) {
                 return $this.GetOfflineResponse($npt)
             }
@@ -5858,6 +5858,7 @@ $prompt
         $vars.Set('Users', @{})
         $vars.Set('Response', '')
         $vars.Set('ExitCode', 0)
+        $vars.Set('OpenAIKey', $null)
         $vars.Set('ResponseCount', 0)
         $vars.Set('Finish_reason', '')
         $vars.Set('ChatIsOngoing', $false)
@@ -5901,7 +5902,7 @@ $prompt
     [bool] DeleteConfigs() {
         return [bool]$(
             try {
-                $configFiles = ([GitHub]::GetTokenFile() | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File
+                $configFiles = ([GitHub]::GetTokenFile() | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File, ($this.Config.Bot_data_Path | Get-ChildItem -File -Recurse).FullName
                 $configFiles.Foreach({ Remove-Item -Path $_ -Force -Verbose });
                 $true
             } catch { $false }
@@ -5989,7 +5990,7 @@ $prompt
         # Used for a code completion Shortcut
         [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState($line, $cursor);
         # Warning: Not ready yet: the fact that a new bot has to be created every time is not cool ie: It will prompt for apikeys & stuff etc ...
-        $bot = [CipherTron]::new(); if (!$bot.HasApiKey()) {
+        $bot = [CipherTron]::new(); if (!$null -eq $bot::Tmp.vars.OpenAIKey) {
             # TODO: Add A GUI to set api key
             throw 'Please Set the api key first and try again'
         }
@@ -6035,14 +6036,14 @@ $prompt
     [void] SetAPIkey() {
         if ($null -eq $this::Tmp.vars.Keys) { $this.SetConfigs() }
         $ApiKey = $null; $rc = 0; $prompt = "Enter your OpenAI API key: "
-        $ogxc = [CipherTron]::Tmp.vars.ExitCode; $env_changed = $false
+        $ogxc = [CipherTron]::Tmp.vars.ExitCode;
         [CipherTron]::Tmp.vars.Set('ExitCode', 1)
         do {
             if ($rc -gt 0) { [void][cli]::Write($this.Config.NoApiKeyHelp + "`n", [System.ConsoleColor]::Green, $false, $true); $prompt = "Paste your OpenAI API key: " }
-            [void][cli]::Write($prompt); Set-Variable -Name ApiKey -Scope local -Visibility Private -Option Private -Value ([XConvert]::ToString((Get-Variable host).Value.UI.ReadLineAsSecureString()));
+            [void][cli]::Write($prompt); Set-Variable -Name ApiKey -Scope local -Visibility Private -Option Private -Value ((Get-Variable host).Value.UI.ReadLineAsSecureString());
             $rc ++
-        } while ([string]::IsNullOrWhiteSpace($ApiKey) -and $rc -lt 2)
-        if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+        } while ([string]::IsNullOrWhiteSpace([XConvert]::ToString($ApiKey)) -and $rc -lt 2)
+        if ([string]::IsNullOrWhiteSpace([XConvert]::ToString($ApiKey))) {
             [CipherTron]::Tmp.vars.Set('Finish_reason', 'Empty_API_key')
             if ($this.Config.ThrowNoApiKey) {
                 throw [System.InvalidOperationException]::new('Operation canceled due to empty API key')
@@ -6050,95 +6051,35 @@ $prompt
                 [CipherTron]::Tmp.vars.Set('OfflineMode', $true)
             }
         } else {
-            $([scriptblock]::Create("[System.Environment]::SetEnvironmentVariable('OpenAIKey', '$($ApiKey.Trim())')")).Invoke(); $env_changed = $true
+            [CipherTron]::Tmp.vars.Set('OpenAIKey', $ApiKey)
         }
         [CipherTron]::Tmp.vars.Set('ExitCode', $ogxc)
-        if ($env_changed) {
-            if ([CipherTron]::Tmp.vars.Host_Os -eq "Windows") {
-                . ([scriptblock]::Create((Invoke-RestMethod -Verbose:$false -Method Get https://api.github.com/gists/8b4ddc0302a9262cf7fc25e919227a2f).files.'Update_Session_Env.ps1'.content))
-                Update-SessionEnvironment | Out-Null
-            }
-            # Prompt user to save API key
-            [void][cli]::Write('++  '); [void][cli]::Write('Encrypt and Save the API key', [System.ConsoleColor]::Green, $true, $false); [void][cli]::Write("  ++`n", $false);
-            $answer = (Get-Variable host).Value.UI.PromptForChoice(
-                '', '         Save API key to an enc file?',
-                [System.Management.Automation.Host.ChoiceDescription[]](
-                    [System.Management.Automation.Host.ChoiceDescription]::new('&y', '(y)es,'),
-                    [System.Management.Automation.Host.ChoiceDescription]::new('&n', '(n)o')
-                ),
-                0
-            )
-            if ($answer -eq 0) {
-                $DataPath = $this.Config.Bot_data_Path
-                $FilePath = [IO.Path]::Combine($DataPath, "apikey.enc")
-                $Protect_and_save_apikey = [scriptblock]::Create({
-                        # Runs Protect-CmsMessage on ApiKey and saves to apikey.enc
-                        # The whole purpose of this script is to run it once, and the bot will never have to prompt for an API key on the same PC again.
-                        $DataPath = $this.Config.Bot_data_Path
-                        $FilePath = [IO.Path]::Combine($DataPath, "apikey.enc")
-                        if (!(Test-Path $DataPath -PathType Container -ErrorAction SilentlyContinue)) {
-                            New-Item -ItemType Directory -Path $DataPath | Out-Null
-                        }
-                        $rec_p = [System.Management.Automation.CmsMessageRecipient]::new([Environment]::UserName)
-                        [XConvert]::ToSecurestring($ApiKey) | ConvertFrom-SecureString | Protect-CmsMessage -To $rec_p -OutFile $FilePath
-                    }
-                )
-                $OpenSSLInstall = [scriptblock]::Create({
-                        # . ([scriptblock]::Create((Invoke-RestMethod -Verbose:$false -Method Get https://api.github.com/gists/3086a66180d50fa75b8046dc85354ed2).files.'Install-OpenSSL.ps1'.content)); return [bool]$(Install-OpenSSL)
-                        return $false
-                    }
-                )
-                switch ([CipherTron]::Tmp.vars.Host_Os) {
-                    "Windows" {
-                        $Protect_and_save_apikey.Invoke()
-                        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new([Environment]::UserName, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, [System.Security.AccessControl.AccessControlType]::Allow)
-                        $acl = Get-Acl $DataPath
-                        $acl.SetAccessRule($rule)
-                        Set-Acl $DataPath $acl
-                        # $decryptedApiKey = Get-Content $FilePath | Unprotect-CmsMessage | ConvertTo-SecureString
-                        # $env:OpenAIkey = $decryptedApiKey
-                    }
-                    "Linux" {
-                        if ($OpenSSLInstall.Invoke()) {
-                            # openssl enc -aes-256-gcm -salt -in apikey.txt -out apikey.txt.enc
-                            # Retriaval Process:
-                            # $apiKeyFilePath = "path/to/apikey.txt.enc"
-                            # $decryptedApiKey = openssl enc -d -aes-256-gcm -salt -in $apiKeyFilePath | ConvertTo-SecureString
-                            # $env:OpenAIkey = $decryptedApiKey
-                        } else {
-                            Write-Warning 'Could not install openssl'
-                            $Protect_and_save_apikey.Invoke()
-                        }
-                    }
-                    "MacOs" {
-                        if ($OpenSSLInstall.Invoke()) {
-                            # openssl enc -aes-256-gcm -salt -in apikey.txt -out apikey.txt.enc
-                        } else {
-                            Write-Warning 'Could not install openssl'
-                            $Protect_and_save_apikey.Invoke()
-                        }
-                    }
-                    "Unknown" {
-                        Write-Warning "Could not save the ApiKey. Unsupported OS!"
-                    }
-                    default {
-                        throw 'Error: Missing Config: $this::Tmp.vars.Host_Os'
-                    }
-                }
-                [void][cli]::Write('API key saved in'); [void][cli]::Write(" $FilePath", [System.ConsoleColor]::Green, $false, $false);
-            } elseif ($answer -eq 1) {
-                [void][cli]::Write("API key not saved`n.", [System.ConsoleColor]::DarkYellow, $true);
-            } else {
-                [void][cli]::Write("Invalid answer.`n", [System.ConsoleColor]::Red, $true);
-            }
+        # Prompt user to save API key
+        [void][cli]::Write('++  '); [void][cli]::Write('Encrypt and Save the API key', [System.ConsoleColor]::Green, $true, $false); [void][cli]::Write("  ++`n", $false);
+        $answer = (Get-Variable host).Value.UI.PromptForChoice(
+            '', '       Encrypt and save API key along with the configs?',
+            [System.Management.Automation.Host.ChoiceDescription[]](
+                [System.Management.Automation.Host.ChoiceDescription]::new('&y', '(y)es,'),
+                [System.Management.Automation.Host.ChoiceDescription]::new('&n', '(n)o')
+            ),
+            0
+        )
+        if ($answer -eq 0) {
+            $DataPath = $this.Config.Bot_data_Path
+            $FilePath = [IO.Path]::Combine($DataPath, "apikey.enc")
+            if (![IO.Directory]::Exists($DataPath)) { [CipherTron]::Create_Dir($DataPath) }
+            Write-Host "$([Config]::caller) Save apikey.enc ..."
+            $Pass = $null; Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to encrypt apikey" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            [IO.File]::WriteAllText($FilePath, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes($ApiKey), $Pass)), [System.Text.Encoding]::UTF8)
+            [void][cli]::Write('API key saved in'); [void][cli]::Write(" $FilePath", [System.ConsoleColor]::Green, $false, $false);
+        } elseif ($answer -eq 1) {
+            [void][cli]::Write("API key not saved`n.", [System.ConsoleColor]::DarkYellow, $true);
+        } else {
+            [void][cli]::Write("Invalid answer.`n", [System.ConsoleColor]::Red, $true);
         }
     }
     static hidden [bool] IsInteractive() {
         return ([Environment]::UserInteractive -and [Environment]::GetCommandLineArgs().Where({ $_ -like '-NonI*' }).Count -eq 0)
-    }
-    hidden [bool] HasApiKey() {
-        #todo: Check keyfile in in saved paths ...
-        return [string]::IsNullOrEmpty([environment]::GetEnvironmentVariable('OpenAIKey'))
     }
     static [version] GetVersion() {
         # Returns the current version of the chatbot.
