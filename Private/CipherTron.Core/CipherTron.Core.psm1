@@ -453,7 +453,7 @@ class CryptoBase {
         return $entropy;
     }
     # Uses a cryptographic hash function (SHA-256) to generate a unique machine ID
-    static [string] hidden GetRandomSTR([string]$InputSample, [int]$iterations, [int]$minLength, [int]$maxLength) {
+    static hidden [string] GetRandomSTR([string]$InputSample, [int]$iterations, [int]$minLength, [int]$maxLength) {
         if ($maxLength -lt $minLength) { throw [System.ArgumentOutOfRangeException]::new('MinLength', "'MaxLength' cannot be less than 'MinLength'") }
         if ($iterations -le 0) { Write-Warning 'Negative and Zero Iterations are NOT Possible!'; return [string]::Empty }
         [char[]]$chars = [char[]]::new($InputSample.Length);
@@ -831,7 +831,7 @@ class XConvert : System.ComponentModel.TypeConverter {
         };
         return $Output;
     }
-    static [void] hidden ValidatePolybiusCipher([string]$Text, [string]$Key, [string]$Action) {
+    static hidden [void] ValidatePolybiusCipher([string]$Text, [string]$Key, [string]$Action) {
         if ($Text -notmatch "^[a-z ]*$" -and ($Action -ne 'Decrypt')) {
             throw('Text must only have alphabetical characters');
         }
@@ -1066,7 +1066,7 @@ class XConvert : System.ComponentModel.TypeConverter {
         }
         return $h
     }
-    static [string] hidden IntToString([Int]$value, [char[]]$baseChars) {
+    static hidden [string] IntToString([Int]$value, [char[]]$baseChars) {
         [int]$i = 32;
         [char[]]$buffer = [Char[]]::new($i);
         [int]$targetBase = $baseChars.Length;
@@ -1871,36 +1871,38 @@ class PasswordManager {
     static [string] GetPasswordHash([string]$Passw0rd) {
         return [xconvert]::BytesToHex([PasswordHash]::new($Passw0rd).ToArray())
     }
-    static [bool] VerifyPasswordHash([string]$Passw0rd, [string]$hashSTR) {
-        return [PasswordManager]::VerifyPasswordHash($Passw0rd, $hashSTR, $false)
+    static [securestring] Resolve([securestring]$Password, [string]$hashSTR) {
+        return [PasswordManager]::Resolve($Password, [CryptoBase]::GetDerivedSalt($Password), $hashSTR)
     }
-    static [bool] VerifyPasswordHash([string]$Passw0rd, [string]$hashSTR, [bool]$ThrowOnFailure) {
-        if ([string]::IsNullOrEmpty($Passw0rd)) {
-            throw [System.ArgumentNullException]::new('password', [InvalidPasswordException]::New('Please input a valid Password'));
-        }
-        if ([string]::IsNullOrWhiteSpace($hashSTR)) {
-            throw [System.ArgumentNullException]::new('hashSTR');
-        }
+    static [securestring] Resolve([securestring]$Password, [byte[]]$salt, [string]$hashSTR) {
+        # Generates a new securestring using HKDF. Ref: https://asecuritysite.com/powershell/enc07
+        # ie: If this was a Powershell function it would be named Get-DerivedPassword
+        $derivedKey = [securestring]::new(); [System.IntPtr]$handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
         Add-Type -AssemblyName System.Runtime.InteropServices
+        Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToString($Password));
         Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
-        $handle = [System.IntPtr]::new(0); [bool]$result = $false; $Isvalid_Hex = [regex]::IsMatch($hashSTR, "^[A-Fa-f0-9]{72}$")
-        try {
-            if (!$Isvalid_Hex) { Throw [System.FormatException]::new("Hash string was in invalid format.") }
-            $hashBytes = $null; Set-Variable -Name hashBytes -Scope Local -Visibility Private -Option Private -Value ([xconvert]::BytesFromHex($hashSTR));
-            if ([PasswordHash]::new($hashBytes).Verify($Passw0rd)) {
-                $result = $true
-            } elseif ($ThrowOnFailure) {
-                throw [System.UnauthorizedAccessException]::new('Wrong Password.');
-            } else {
-                $result = $false
+        [ValidateNotNullOrEmpty()][string] $hashSTR = $hashSTR
+        [ValidateNotNullOrEmpty()][string] $Passw0rd = $Passw0rd
+        if ([PasswordHash]::new([xconvert]::BytesFromHex($hashSTR)).Verify($Passw0rd, $salt)) {
+            try {
+                if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With Hash: $hashSTR") }
+                $derivedKey = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($Passw0rd, $salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)));
+            } catch {
+                Write-Error ($error[1].exception.ErrorRecord)
+                throw $_
+            } finally {
+                # Zero out the memory used by the variable.
+                [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
             }
-        } catch {
-            throw $_
-        } finally {
-            Remove-Variable hashBytes -Force -ErrorAction SilentlyContinue
-            [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
+            return $derivedKey
+        } else {
+            if ([System.Environment]::UserInteractive) {
+                # [System.Console]::Beep(600, 100); [System.Threading.Thread]::Sleep(100); [System.Console]::Beep(600, 200);
+                [System.Console]::Beep(); [System.Threading.Thread]::Sleep(100); [System.Console]::Beep();
+                Write-Verbose "[x] Wrong Password!";
+            }
+            Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
         }
-        return $result
     }
     static [string] CreateHOTP([string]$SECRET, [int]$Phone) {
         return [PasswordManager]::CreateHOTP($phone, [PasswordManager]::GetOtp($SECRET))
@@ -2021,8 +2023,19 @@ class PasswordManager {
 #
 #     # STEP 2. Check Password against a Stored hash.
 #     [byte[]]$hashBytes = [xconvert]::BytesFromHex($(Get-Content $ReallySecureFilePath));
-#     $hash = [PasswordHash]::new($hashBytes);
-#     if(!$hash.Verify("newly entered password")) { throw [System.UnauthorizedAccessException]::new() };
+#     $hash = [PasswordHash]::new($hashBytes); $salt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring("MypasswordString"))
+#     if(!$hash.Verify("newly entered password", $salt)) { throw [System.UnauthorizedAccessException]::new() };
+#
+#     The main use is to never store the actual input password, rather keep its hash
+#-----# STEP 1. Create Hash and Store it somewhere secure.
+#     $inputpass = [xconvert]::ToSecureString("MypasswordString");
+#     $hashSTR = [PasswordHash]::new($inputpass).ToString()
+#     $paswdused = [xconvert]::Tostring([PasswordManager]::Resolve($inputpass, $hashSTR))
+#     $hashSTR | Out-File ReallySecureFilePath; # keep it in a file
+#
+#-----# STEP 2. Use the Hash to get back the actual $paswdused
+#     $paswdused = [xconvert]::Tostring([PasswordManager]::Resolve($inputpass, $(Get-Content $ReallySecureFilePath)))
+#
 # .NOTES
 #     https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
 class PasswordHash {
@@ -2049,20 +2062,28 @@ class PasswordHash {
         [void][Array]::Copy($salt, 0, $this.salt, 0, $this.SaltSize)
         [void][Array]::Copy($hash, 0, $this.hash, 0, $this.HashSize)
     }
-    [byte[]]ToArray() {
+    [byte[]] ToArray() {
         [byte[]]$hashBytes = [byte[]]::new($this.SaltSize + $this.HashSize);
         [void][Array]::Copy($this.salt, 0, $hashBytes, 0, $this.SaltSize);
         [void][Array]::Copy($this.hash, 0, $hashBytes, $this.SaltSize, $this.HashSize)
         return $hashBytes;
     }
-    [byte[]]GetSalt() {
+    [string] ToString() {
+        return [xconvert]::BytesToHex($this.ToArray())
+    }
+    [byte[]] GetSalt() {
         return $this.salt.Clone();
     }
-    [byte[]]GetHash() {
+    [byte[]] GetHash() {
         return $this.hash.Clone();
     }
-    [bool]Verify([string]$passw0rd) {
-        [byte[]]$test = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($passw0rd, $this.salt, $this.HashIter).GetBytes($this.HashSize); [bool]$rs = $true;
+    [bool] Verify([string]$passw0rd) {
+        return $this.Verify($passw0rd, $this.salt)
+    }
+    [bool] Verify([string]$passw0rd, [byte[]]$salt) {
+        [ValidateNotNullOrEmpty()][byte[]]$salt = $salt
+        [ValidateNotNullOrEmpty()][string]$passw0rd = $passw0rd
+        [byte[]]$test = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($passw0rd, $salt, $this.HashIter).GetBytes($this.HashSize); [bool]$rs = $true;
         for ($i = 0; $i -lt $this.HashSize; $i++) {
             $rs = $rs -and $(if ($test[$i] -ne $this.hash[$i]) { $false }else { $true })
         }
@@ -2106,7 +2127,7 @@ class FipsHmacSha256 : System.Security.Cryptography.HMAC {
         $hash = [BitConverter]::ToString($hashBytes) -replace '-'
         return $hash
     }
-    [void] hidden _Init() {
+    hidden [void] _Init() {
         if ($null -eq [FipsHmacSha256].RNG) {
             [FipsHmacSha256].psobject.Properties.Add([psscriptproperty]::new('RNG',
                     { return [System.Security.Cryptography.RNGCryptoServiceProvider]::new() }
@@ -2372,7 +2393,7 @@ class CredentialManager {
         ) | Select-Object @{l = 'Target'; e = { $_.target.replace('LegacyGeneric:target=', '').replace('WindowsLive:target=', '') } }, Type, User, Persistence | Where-Object { $_.target -ne 'virtualapp/didlogical' };
         return $credList
     }
-    static [void] hidden Init() {
+    static hidden [void] Init() {
         $Host_OS = $(if ($(Get-Variable PSVersionTable -Value).PSVersion.Major -le 5 -or $(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" });
         if ($Host_OS -ne "Windows") {
             throw "Error: '$Host_OS' is Unsupported. CredentialManager class works on windows only."
@@ -2945,7 +2966,7 @@ class VaultClient {
     [string] $Token # This is a token that is used to authenticate with the Vault server. You can generate a new token using the vault token create command, or you can use the vault status command to display the current token of the Vault server.
     [string] $Protocol # This is the protocol that will be used to communicate with the Vault server. The most common value is https, but you can also use http if you have configured your Vault server to use an insecure connection. You can find this value in the api_addr field of the vault.hcl configuration file, or you can use the vault status command to display the current protocol of the Vault server.
     [string] $Url = [string]::Empty
-    [PSCustomObject] hidden $ClientObj = $null
+    hidden [PSCustomObject] $ClientObj = $null
     static hidden $releases # ie: [Microsoft.PowerShell.Commands.HtmlWebResponseObject]
 
     # Constructor for the VaultClient class
@@ -4283,7 +4304,7 @@ class MD5 : CryptoBase {
 class TripleDES : CryptoBase {
     [ValidateNotNullOrEmpty()][cPsObject]$Object;
     [ValidateNotNullOrEmpty()][SecureString]$Password;
-    static [byte[]] hidden $Salt = [System.Text.Encoding]::UTF7.GetBytes('@Q:j9=`M?EV/h>9_M/esau>A)Y6h>/v^q\ZVMPH\Vu5/E"P_GN`#t6Wnf;ah~[dik.fkj7vpoSqqN]-u`tSS5o26?\u).6YF-9e_5-KQ%kf)A{P4a9/67J8v]:[%i8PW');
+    static hidden [byte[]] $Salt = [System.Text.Encoding]::UTF7.GetBytes('@Q:j9=`M?EV/h>9_M/esau>A)Y6h>/v^q\ZVMPH\Vu5/E"P_GN`#t6Wnf;ah~[dik.fkj7vpoSqqN]-u`tSS5o26?\u).6YF-9e_5-KQ%kf)A{P4a9/67J8v]:[%i8PW');
 
     TripleDES([Object]$object) {
         $this.Object = [cPsObject]::new($object)
@@ -4345,7 +4366,7 @@ class TripleDES : CryptoBase {
     static [byte[]] Decrypt ([byte]$data, [securestring]$Password, [int]$iterations) {
         return [TripleDES]::Decrypt($data, [XConvert]::Tostring($Password), $iterations)
     }
-    static [byte[]] hidden Get_ED([Byte[]]$data, [Byte[]]$Key, [Byte[]]$IV, [bool]$Encrypt) {
+    static hidden [byte[]] Get_ED([Byte[]]$data, [Byte[]]$Key, [Byte[]]$IV, [bool]$Encrypt) {
         $result = [byte[]]::new(0); $ms = [System.IO.MemoryStream]::new(); $cs = $null
         try {
             $tdes = [System.Security.Cryptography.TripleDESCryptoServiceProvider]::new()
@@ -4385,7 +4406,7 @@ class TripleDES : CryptoBase {
 class XOR : CryptoBase {
     [ValidateNotNullOrEmpty()][cPsObject]$Object;
     [ValidateNotNullOrEmpty()][SecureString]$Password;
-    static [byte[]] hidden $Salt = [System.Text.Encoding]::UTF7.GetBytes('\SBOv!^L?XuCFlJ%*[6(pUVp5GeR^|U=NH3FaK#XECOaM}ExV)3_bkd:eG;Z,tWZRMg;.A!,:-k6D!CP>74G+TW7?(\6;Li]lA**2P(a2XxL}<.*oJY7bOx+lD>%DVVa');
+    static hidden [byte[]] $Salt = [System.Text.Encoding]::UTF7.GetBytes('\SBOv!^L?XuCFlJ%*[6(pUVp5GeR^|U=NH3FaK#XECOaM}ExV)3_bkd:eG;Z,tWZRMg;.A!,:-k6D!CP>74G+TW7?(\6;Li]lA**2P(a2XxL}<.*oJY7bOx+lD>%DVVa');
     XOR([Object]$object) {
         $this.Object = [cPsObject]::new($object)
         $this.Password = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new([CryptoBase]::GetUniqueMachineId(), [XOR]::Salt, 1000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)))
@@ -4450,7 +4471,7 @@ class XOR : CryptoBase {
         };
         return $_bytes;
     }
-    static [byte[]] hidden Get_ED([byte[]]$Bytes, [byte[]]$key) {
+    static hidden [byte[]] Get_ED([byte[]]$Bytes, [byte[]]$key) {
         return $(for ($i = 0; $i -lt $bytes.length) {
                 for ($j = 0; $j -lt $key.length; $j++) {
                     $bytes[$i] -bxor $key[$j]
@@ -4766,10 +4787,10 @@ class Poly1305 : CryptoBase {
 #     - Obfuscation method was inspired by: https://netsec.expert/posts/write-a-crypter-in-any-language
 #       I modified the functions from netsec blog and tried my best to avoid using Invoke-Expression in any possible way, since its like a red flag for Anti viruses. I Instead used "& ([scriptblock]::Create(...."
 Class FileCryptr {
-    [ValidateNotNullOrEmpty()][string] hidden static $_salt;
-    [ValidateNotNullOrEmpty()][securestring] static $Password;
-    [ValidateNotNullOrEmpty()][Compression] hidden static $Compression;
-    [System.Object] hidden static $CommonFileExtensions;
+    static hidden [System.Object] $CommonFileExtensions;
+    static hidden [ValidateNotNullOrEmpty()][string] $_salt;
+    static hidden [ValidateNotNullOrEmpty()][securestring] $Password;
+    static hidden [ValidateNotNullOrEmpty()][Compression] $Compression;
     FileCryptr() {
         [FileCryptr]::_salt = 'bz07LmY5XiNkXW1WQjxdXw=='
         [FileCryptr]::Compression = [Compression]::Gzip
@@ -4855,7 +4876,7 @@ Class FileCryptr {
     static [string] GetStub([string]$filePath, [string]$base64key) {
         return [FileCryptr]::GetStub($filePath, $base64key, [FileCryptr]::_salt)
     }
-    static [string] hidden GetStub([string]$filePath, [string]$base64key, [string]$salt) {
+    static hidden [string] GetStub([string]$filePath, [string]$base64key, [string]$salt) {
         Write-Verbose "[+] Reading file: '$($filePath)' ..."
         $filePath = [CryptoBase]::GetUnResolvedPath($filePath)
         if (![IO.File]::Exists($filePath)) { throw [System.IO.FileNotFoundException]::new("Unable to find the file: $filePath") }
@@ -5096,37 +5117,7 @@ class k3y {
             & ([scriptblock]::Create("`$this.User.psobject.Properties.Add([psscriptproperty]::new('Password', { ConvertTo-SecureString -AsPlainText -String '$hashSTR' -Force }))"));
         }
         $SecHash = $this.User.Password;
-        return $this.ResolvePassword($Password, $SecHash);
-    }
-    [securestring]hidden ResolvePassword([securestring]$Password, [securestring]$SecHash) {
-        $derivedKey = [securestring]::new(); [System.IntPtr]$handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
-        Add-Type -AssemblyName System.Runtime.InteropServices
-        Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToString($Password));
-        Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
-        if ([PasswordManager]::VerifyPasswordHash($Passw0rd, [xconvert]::ToString($SecHash), $true)) {
-            try {
-                if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With Hash: $([xconvert]::Tostring($SecHash))") }
-                # This next line is like a KDF. ie: If this was a Powershell function it would be named Get-KeyFromPassword
-                $derivedKey = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($Passw0rd, $this::Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)));
-                # Most people use utf8, so I use 'UTF7 instead. (Just to be extra cautious)
-                # & I could use: System.Security.Cryptography.PasswordDeriveBytes]::new($Passw0rd, $this::Salt, 'SHA1', 2).GetBytes(256 / 8)...
-                # Which would be less stress on cpu but sacrificing too much security. so its a Nono
-            } catch {
-                Write-Error ($error[1].exception.ErrorRecord)
-                throw $_
-            } finally {
-                # Zero out the memory used by the variable.
-                [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
-                # It is usually sufficient to simply use the Remove-Variable but in this situation we Just want to be extra cautious.
-            }
-            return $derivedKey
-        } else {
-            if ([System.Environment]::UserInteractive) {
-                [System.Console]::Beep(600, 100); [System.Threading.Thread]::Sleep(100); [System.Console]::Beep(600, 200);
-                Write-Verbose "[x] Wrong Password!";
-            }
-            Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
-        }
+        return [PasswordManager]::Resolve($Password, $SecHash)
     }
     [bool]IsHashed() {
         return $this.IsHashed($false);
@@ -5481,9 +5472,7 @@ class CipherTron : CryptoBase {
 
     CipherTron() {
         $this.Version = [CipherTron]::GetVersion()
-        $this.Presets = [chatPresets]::new();
-        [CipherTron]::Tmp = [chatTmp]::new();
-        [CipherTron]::ChatSession = [ChatSession]::new(); $this.SetConfigs(); $this.SaveConfigs(); $this.ImportConfigs()
+        [CipherTron]::ChatSession = [ChatSession]::new(); $this.SetTMPvariables(); $this.SaveConfigs(); $this.ImportConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('ConfigPath', [scriptblock]::Create({ return [CipherTron]::Get_Config_Path($this.Config.FileName) })))
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ return [CipherTron]::Get_dataPath() })))
         $this.PsObject.properties.add([psscriptproperty]::new('User', [scriptblock]::Create({ return [CipherTron]::ChatSession.User })))
@@ -5638,10 +5627,11 @@ class CipherTron : CryptoBase {
         return $rsp
     }
     [string] GetResponse([string]$npt, [gptOptions]$options) {
-        [ValidateNotNullOrEmpty()][string]$npt = $npt; [ValidateNotNullOrEmpty()][gptOptions]$options = $options
-        if ($null -ne [CipherTron]::Tmp.vars.OpenAIKey) {
+        [ValidateNotNullOrEmpty()][string]$npt = $npt;
+        [ValidateNotNullOrEmpty()][gptOptions]$options = $options; $OpenAIKey = $this.GetAPIkey()
+        if ($null -eq $OpenAIKey) {
             if (![CipherTron]::IsInteractive()) { throw 'Please run SetAPIkey() first. Get yours at: https://platform.openai.com/account/api-keys' }
-            $this.SetAPIkey(); if ([CipherTron]::Tmp.vars.Finish_reason -eq 'Empty_API_key' -and [CipherTron]::Tmp.vars.OfflineMode) {
+            $this.SetAPIkey(); if ([CipherTron]::Tmp.vars.Finish_reason -eq 'Empty_API_key' -or [CipherTron]::Tmp.vars.OfflineMode) {
                 return $this.GetOfflineResponse($npt)
             }
         }
@@ -5679,7 +5669,7 @@ $prompt
             $http_Client = New-Object System.Net.Http.HttpClient; $http_Client.Timeout = [System.TimeSpan]::new(0, 0, 15); # Set MaxTimout to 15 seconds. The OpenAI API documentation recommends setting a timeout of at least 10 seconds for all API requests.
             $httpRequest = New-Object System.Net.Http.HttpRequestMessage(('Post' -as 'System.Net.Http.HttpMethod'), "https://api.openai.com/v1/completions");
             $httpRequest.Content = New-Object System.Net.Http.StringContent($body, [System.Text.Encoding]::UTF8, "application/json");
-            $httpRequest.Headers.Authorization = "Bearer $($env:OpenAIKey)";
+            $httpRequest.Headers.Authorization = "Bearer $([XConvert]::Tostring($OpenAIKey))";
             $Rest_Result = ConvertFrom-Json $($http_Client.SendAsync($httpRequest).GetAwaiter().GetResult().Content.ReadAsStringAsync().GetAwaiter().GetResult());
             if ([CipherTron]::Tmp.vars.OfflineMode) { [CipherTron]::Tmp.vars.Set('OfflineMode', $false) }
         } catch [System.Net.Sockets.SocketException] {
@@ -5707,7 +5697,7 @@ $prompt
         return $GptResponse
     }
     hidden [string] GetOfflineResponse([string]$query) {
-        [ValidateNotNullOrEmpty()][string]$query = $query; if ($null -eq $this.Config -or $null -eq $this::Tmp.vars.Keys) { $this.SetConfigs() }; [string]$resp = '';
+        [ValidateNotNullOrEmpty()][string]$query = $query; if ($null -eq $this::Tmp.vars.Keys) { $this.SetTMPvariables() }; [string]$resp = '';
         if ([CipherTron]::ChatSession.ChatLog.Messages.Count -eq 0 -and $this::Tmp.vars.Query -eq $this.Config.First_Query) { return $this.Config.OfflineHello }
         $resp = $this.Config.OfflineNoAns; trap { $resp = "Error! $_`n$resp" }
         Write-Debug "Checking through presets ..." -Debug
@@ -5838,7 +5828,7 @@ $prompt
                 throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File)'")
             }; [void](New-Item -ItemType File -Path $this.Config.File)
         }
-        # Set_Preset_Commands and their aliases:
+        if ($null -eq $this.Presets) { $this.Presets = [chatPresets]::new() }
         $Commands = $this.Get_default_Commands()
         $Commands.keys | ForEach-Object {
             $this.Presets.Add([PresetCommand]::new("$_", $Commands[$_][0]))
@@ -5851,27 +5841,107 @@ $prompt
             }
         }
         [cli]::preffix = $this.Config.emojis.Bot
-        # Set_Tmp_variables: Set default variables and stores them in $this::Tmp.vars Make it way easier to clean & manage without worying about scopes and not dealing with global variables.
-        $vars = [CipherTron]::Tmp.vars
-        $vars.Set('Quick_Exit', $this.Config.Quick_Exit) #ie: if true, then no Questions asked, Just closes the damn thing.
-        $vars.Set('Query', '')
-        $vars.Set('Users', @{})
-        $vars.Set('Response', '')
-        $vars.Set('ExitCode', 0)
-        $vars.Set('OpenAIKey', $null)
-        $vars.Set('ResponseCount', 0)
-        $vars.Set('Finish_reason', '')
-        $vars.Set('ChatIsOngoing', $false)
-        $vars.Set('CurrentsessionId', '')
-        $vars.Set('SetStage_Complete', $false)
-        $vars.Set('OfflineMode', $this.IsOffline)
-        $vars.Set('Host_Os', [CipherTron]::Get_Host_Os())
-        $vars.Set('StopSigns', [gptOptions]::new().GetStopSign())
-        $vars.Set('OgWindowTitle', $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle)
-        $vars.Set('WhatIf_IsPresent', [bool]$((Get-Variable WhatIfPreference).Value.IsPresent))
         [cli]::textValidator = [scriptblock]::Create({ param($npt) if ([CipherTron]::Tmp.vars.ChatIsOngoing -and ([string]::IsNullOrWhiteSpace($npt))) { throw [System.ArgumentNullException]::new('InputText!') } })
-        #+++ Ctrl get completion
         Set-PSReadLineKeyHandler -Key 'Ctrl+g' -BriefDescription OpenAICli -LongDescription "Calls Open AI on the current buffer" -ScriptBlock $([scriptblock]::Create("param(`$key, `$arg) (`$line, `$cursor) = (`$null,`$null); [CipherTron]::Complete([ref]`$line, [ref]`$cursor);"))
+    }
+    [void] SetTMPvariables() {
+        # Sets default variables and stores them in $this::Tmp.vars
+        # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
+        if ($null -eq [CipherTron]::Tmp) { [CipherTron]::Tmp = [chatTmp]::new() }
+        if ($null -eq $this.Config) { $this.SetConfigs() }
+        [CipherTron]::Tmp.vars.Set(@{
+                Query             =  ''
+                Users             = @{}
+                Host_Os           = [CipherTron]::Get_Host_Os()
+                Response          = ''
+                ExitCode          = 0
+                StopSigns         = [gptOptions]::new().GetStopSign()
+                ApiKey_Path       = $this.Get_ApiKey_Path("OpenAIKey.enc")
+                Quick_Exit        = $this.Config.Quick_Exit  #ie: if true, then no Questions asked, Just closes the damn thing.
+                OfflineMode       = $this.IsOffline
+                ResponseCount     = 0
+                Finish_reason     = ''
+                OgWindowTitle     = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
+                ChatIsOngoing     = $false
+                CurrentsessionId  = ''
+                WhatIf_IsPresent  = [bool]$((Get-Variable WhatIfPreference).Value.IsPresent)
+                SetStage_Complete = $false
+            }
+        )
+    }
+    [securestring] GetAPIkey([securestring]$Password) {
+        $TokenFile = [CipherTron]::Tmp.vars.ApiKey_Path; $sectoken = $null; $_c = [AesGCM]::caller; [AesGCM]::caller = '[CipherTron]'
+        if ([string]::IsNullOrWhiteSpace((Get-Content $TokenFile -ErrorAction Ignore))) {
+            $this.SetAPIkey()
+        } elseif ([CipherTron]::IsBase64String([IO.File]::ReadAllText($TokenFile))) {
+            Write-Host "[CipherTron] Encrypted token found in file: $TokenFile" -ForegroundColor DarkGreen
+        } else {
+            throw [System.Exception]::New("Unable to read token file!")
+        }
+        try {
+            $sectoken = [XConvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText($TokenFile)), $Password)))
+        } catch {
+            throw $_
+        } finally {
+            [AesGCM]::caller = $_c
+        }
+        return $sectoken
+    }
+    [void] SetAPIkey() {
+        if ($null -eq $this::Tmp.vars.Keys) { $this.SetTMPvariables() }
+        $ApiKey = $null; $rc = 0; $prompt = "Enter your OpenAI API key: "
+        $ogxc = [CipherTron]::Tmp.vars.ExitCode;
+        [CipherTron]::Tmp.vars.Set('ExitCode', 1)
+        do {
+            if ($rc -gt 0) { [void][cli]::Write($this.Config.NoApiKeyHelp + "`n", [System.ConsoleColor]::Green, $false, $true); $prompt = "Paste your OpenAI API key: " }
+            [void][cli]::Write($prompt); Set-Variable -Name ApiKey -Scope local -Visibility Private -Option Private -Value ((Get-Variable host).Value.UI.ReadLineAsSecureString());
+            $rc ++
+        } while ([string]::IsNullOrWhiteSpace([XConvert]::ToString($ApiKey)) -and $rc -lt 2)
+        [CipherTron]::Tmp.vars.Set('OfflineMode', $true)
+        if ([string]::IsNullOrWhiteSpace([XConvert]::ToString($ApiKey))) {
+            [CipherTron]::Tmp.vars.Set('Finish_reason', 'Empty_API_key')
+            if ($this.Config.ThrowNoApiKey) {
+                throw [System.InvalidOperationException]::new('Operation canceled due to empty API key')
+            }
+        }
+        if ([CipherTron]::IsInteractive()) {
+            # Ask the user to save API key or not:
+            [void][cli]::Write('++  '); [void][cli]::Write('Encrypt and Save the API key', [System.ConsoleColor]::Green, $true, $false); [void][cli]::Write("  ++`n", $false);
+            $answer = (Get-Variable host).Value.UI.PromptForChoice(
+                '', '       Encrypt and save OpenAi API key on local drive?',
+                [System.Management.Automation.Host.ChoiceDescription[]](
+                    [System.Management.Automation.Host.ChoiceDescription]::new('&y', '(y)es,'),
+                    [System.Management.Automation.Host.ChoiceDescription]::new('&n', '(n)o')
+                ),
+                0
+            )
+            if ($answer -eq 0) {
+                $Pass = $null; Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to encrypt apikey" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+                $this.SaveApiKey($ApiKey, [CipherTron]::Tmp.vars.ApiKey_Path, $Pass)
+                [CipherTron]::Tmp.vars.Set('OfflineMode', $false)
+            } elseif ($answer -eq 1) {
+                [void][cli]::Write("API key not saved`n.", [System.ConsoleColor]::DarkYellow, $true);
+            } else {
+                [void][cli]::Write("Invalid answer.`n", [System.ConsoleColor]::Red, $true);
+            }
+        } else {
+            # save without asking :)
+            $this.SaveApiKey($ApiKey, [CipherTron]::Tmp.vars.ApiKey_Path, [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()))
+        }
+        [CipherTron]::Tmp.vars.Set('ExitCode', $ogxc)
+    }
+    [void] SaveApiKey([securestring]$ApiKey, [string]$FilePath, [securestring]$password) {
+        if (![IO.File]::Exists("$FilePath")) {
+            Throw [FileNotFoundException]::new("Please set a valid ApiKey_Path first", $FilePath)
+        }
+        #--todo: use hash hkdf
+        [void][cli]::Write("Saving API key to $([IO.Fileinfo]::New($FilePath).FullName) ...", [System.ConsoleColor]::Green, $false, $false);
+        [IO.File]::WriteAllText($FilePath, [convert]::ToBase64String([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([XConvert]::ToString($ApiKey)), $password)), [System.Text.Encoding]::UTF8)
+        [void][cli]::Write('API key saved in'); [void][cli]::Write(" $FilePath", [System.ConsoleColor]::Green, $false, $false);
+    }
+    [string] Get_ApiKey_Path([string]$fileName) {
+        $DataPath = $this.Config.Bot_data_Path; if (![IO.Directory]::Exists($DataPath)) { [CipherTron]::Create_Dir($DataPath) }
+        return [IO.Path]::Combine($DataPath, "$fileName")
     }
     [void] EditConfig() {
         if ($null -eq $this.Config) {
@@ -5890,7 +5960,8 @@ $prompt
     }
     [void] SyncConfigs() {
         # Imports remote configs into current ones, then uploads the updated version to github gist
-        $this.ImportConfig($this.Config.Remote); $this.Config.Upload()
+        # Compare REMOTE's lastWritetime with [IO.File]::GetLastWriteTime($this.File)
+        $this.ImportConfig($this.Config.Remote); $this.SaveConfigs()
     }
     [void] ImportConfigs() {
         [Config]::caller = "[$($this.GetType().Name)]"; [void]$this.Config.Import($this.Config.File)
@@ -5937,6 +6008,7 @@ $prompt
             ChatDescrptn  = "The following is a conversation of $([CipherTron]::ChatSession.ChatLog.Sendr) with an A.I cryptography assistant named $([CipherTron]::ChatSession.ChatLog.Recvr). The assistant is a helpful, creative, clever security expert and extremely experienced in cryptography and PowerShell Scripting.`n"
             UsageHelp     = "Usage:`nHere's an example of how to use this bot:`n   `$bot = [CipherTron]::new()`n   `$bot.Chat()`n`nAnd make sure you have Internet."
             Bot_data_Path = [CipherTron]::Get_dataPath()
+            LastWriteTime = [datetime]::Now
         }
         $default_Config.UsageHelp += "`n`nPreset Commands:`n"; $commands = $this.Get_default_Commands()
         $default_Config.UsageHelp += $($commands.Keys.ForEach({ [PSCustomObject]@{ Command = $_; Aliases = $commands[$_][1]; Description = $commands[$_][2] } }) | Out-String).Replace("{", '(').Replace("}", ')')
@@ -5961,7 +6033,7 @@ $prompt
             ToggleOffline = { [CipherTron]::ToggleOffline() }, ('Offline Mode', 'toggle Offline'), 'Change chatmode to offline'
             SavetoImage   = { [CipherTron]::SavetoImage() }, ('Save to Image', 'hide in Image'), 'Used for steganography stuff'
             NewPassword   = { [CipherTron]::NewPassword() }, ('new password', 'new-password'), 'Generate new password'
-            generateKey   = { [KeyManager]::generateKey() }, ('generate key', 'new key'), ''
+            generateKey   = { [KeyManager]::generateKey() }, ('create key', 'new key'), ''
             importKey     = { [KeyManager]::importKey() }, ('import key', 'use key'), ''
             deleteKey     = { [KeyManager]::deleteKey() }, ('delete key', 'delkey'), ''
             rotateKeys    = { [KeyManager]::rotateKeys() }, ('rotate key', 'rtkey'), ''
@@ -5990,7 +6062,7 @@ $prompt
         # Used for a code completion Shortcut
         [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState($line, $cursor);
         # Warning: Not ready yet: the fact that a new bot has to be created every time is not cool ie: It will prompt for apikeys & stuff etc ...
-        $bot = [CipherTron]::new(); if (!$null -eq $bot::Tmp.vars.OpenAIKey) {
+        $bot = [CipherTron]::new(); if ($null -eq $bot::Tmp.vars.OpenAIKey) {
             # TODO: Add A GUI to set api key
             throw 'Please Set the api key first and try again'
         }
@@ -6010,7 +6082,7 @@ $prompt
             [Microsoft.PowerShell.PSConsoleReadLine]::Insert("'@")
         }
     }
-    static [void] WriteBanner() {
+    static hidden [void] WriteBanner() {
         $bc = [CipherTron]::banners.Count
         if ($null -eq [CipherTron]::banners -or ($bc -eq 0)) {
             [void][CipherTron]::banners.Add([base85]::Decode([xconvert]::ToDeCompressed('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')));
@@ -6021,7 +6093,7 @@ $prompt
         [void][cli]::Write("            Making Cryptography Easy and Fun", [System.ConsoleColor]::Green, $true, $false)
         [void][System.Console]::WriteLine()
     }
-    [void] ShowMenu() {
+    hidden [void] ShowMenu() {
         if ($null -eq [CipherTron]::ConfigUri) {
             if ($null -eq $this.Config) { $this.SetConfigs() }
             [CipherTron]::ConfigUri = $this.Config.Remote
@@ -6033,51 +6105,6 @@ $prompt
         [CipherTron]::WriteBanner()
         # code for menu goes here ...
     }
-    [void] SetAPIkey() {
-        if ($null -eq $this::Tmp.vars.Keys) { $this.SetConfigs() }
-        $ApiKey = $null; $rc = 0; $prompt = "Enter your OpenAI API key: "
-        $ogxc = [CipherTron]::Tmp.vars.ExitCode;
-        [CipherTron]::Tmp.vars.Set('ExitCode', 1)
-        do {
-            if ($rc -gt 0) { [void][cli]::Write($this.Config.NoApiKeyHelp + "`n", [System.ConsoleColor]::Green, $false, $true); $prompt = "Paste your OpenAI API key: " }
-            [void][cli]::Write($prompt); Set-Variable -Name ApiKey -Scope local -Visibility Private -Option Private -Value ((Get-Variable host).Value.UI.ReadLineAsSecureString());
-            $rc ++
-        } while ([string]::IsNullOrWhiteSpace([XConvert]::ToString($ApiKey)) -and $rc -lt 2)
-        if ([string]::IsNullOrWhiteSpace([XConvert]::ToString($ApiKey))) {
-            [CipherTron]::Tmp.vars.Set('Finish_reason', 'Empty_API_key')
-            if ($this.Config.ThrowNoApiKey) {
-                throw [System.InvalidOperationException]::new('Operation canceled due to empty API key')
-            } else {
-                [CipherTron]::Tmp.vars.Set('OfflineMode', $true)
-            }
-        } else {
-            [CipherTron]::Tmp.vars.Set('OpenAIKey', $ApiKey)
-        }
-        [CipherTron]::Tmp.vars.Set('ExitCode', $ogxc)
-        # Prompt user to save API key
-        [void][cli]::Write('++  '); [void][cli]::Write('Encrypt and Save the API key', [System.ConsoleColor]::Green, $true, $false); [void][cli]::Write("  ++`n", $false);
-        $answer = (Get-Variable host).Value.UI.PromptForChoice(
-            '', '       Encrypt and save API key along with the configs?',
-            [System.Management.Automation.Host.ChoiceDescription[]](
-                [System.Management.Automation.Host.ChoiceDescription]::new('&y', '(y)es,'),
-                [System.Management.Automation.Host.ChoiceDescription]::new('&n', '(n)o')
-            ),
-            0
-        )
-        if ($answer -eq 0) {
-            $DataPath = $this.Config.Bot_data_Path
-            $FilePath = [IO.Path]::Combine($DataPath, "apikey.enc")
-            if (![IO.Directory]::Exists($DataPath)) { [CipherTron]::Create_Dir($DataPath) }
-            Write-Host "$([Config]::caller) Save apikey.enc ..."
-            $Pass = $null; Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to encrypt apikey" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
-            [IO.File]::WriteAllText($FilePath, [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes($ApiKey), $Pass)), [System.Text.Encoding]::UTF8)
-            [void][cli]::Write('API key saved in'); [void][cli]::Write(" $FilePath", [System.ConsoleColor]::Green, $false, $false);
-        } elseif ($answer -eq 1) {
-            [void][cli]::Write("API key not saved`n.", [System.ConsoleColor]::DarkYellow, $true);
-        } else {
-            [void][cli]::Write("Invalid answer.`n", [System.ConsoleColor]::Red, $true);
-        }
-    }
     static hidden [bool] IsInteractive() {
         return ([Environment]::UserInteractive -and [Environment]::GetCommandLineArgs().Where({ $_ -like '-NonI*' }).Count -eq 0)
     }
@@ -6085,10 +6112,10 @@ $prompt
         # Returns the current version of the chatbot.
         return [version]::New($script:localizedData.ModuleVersion)
     }
-    [void] hidden _Exit() {
+    hidden [void] _Exit() {
         $this._Exit($false);
     }
-    [void] hidden _Exit([bool]$cleanUp) {
+    hidden [void] _Exit([bool]$cleanUp) {
         $ExitMsg = if ($this::Tmp.vars.ExitCode -gt 0) { "Sorry, an error Occured, Ending chat session ...`n     " } else { "Okay, see you nextime." };
         # save stuff, Restore stuff
         [System.Console]::Out.NewLine; [void]$this.SaveSession()
@@ -6359,23 +6386,22 @@ class chatTmp {
 }
 class chatPresets {
     chatPresets() {
-        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type NoteProperty).count })))
-        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type NoteProperty).Name })))
+        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count })))
+        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name })))
     }
     chatPresets([PresetCommand[]]$Commands) {
         [ValidateNotNullOrEmpty()][PresetCommand[]]$Commands = $Commands; $this.Add($Commands)
-        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type NoteProperty).count })))
-        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type NoteProperty).Name })))
+        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count })))
+        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name })))
     }
     [void] Add([PresetCommand[]]$Commands) {
-        foreach ($Command in $Commands) { if (!$this.Contains($Command.Name)) { $this | Add-Member -MemberType NoteProperty -Name $Command.Name -Value $Command } }
-    }
-    [bool] Contains([string]$Name) {
-        [ValidateNotNullOrEmpty()][string]$Name = $Name
-        return (($this | Get-Member -Type NoteProperty | Select-Object -ExpandProperty name) -contains "$Name")
+        $cms = $this.Keys
+        foreach ($Command in $Commands) {
+            if (!$cms.Contains($Command.Name)) { $this | Add-Member -MemberType NoteProperty -Name $Command.Name -Value $Command }
+        }
     }
     [bool] Contains([PresetCommand]$Command) {
-        return $this.Contains($Command.Name)
+        return $this.Keys.Contains($Command.Name)
     }
     [array] ToArray() {
         $array = @(); $props = $this | Get-Member -MemberType NoteProperty
@@ -6727,6 +6753,7 @@ class Config {
     static hidden [string] $caller = '[Config]'
     [uri] $Remote # usually a gist uri
     [string] $File
+    [datetime] $LastWriteTime = [datetime]::Now
     Config() {
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
         $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
@@ -6738,7 +6765,7 @@ class Config {
     }
     [void] Add([string]$key, [System.Object]$value) {
         [ValidateNotNullOrEmpty()][string]$key = $key
-        if (!$this.Contains($key)) {
+        if (!$this.HasNoteProperty($key)) {
             $htab = [hashtable]::new(); $htab.Add($key, $value); $this.Add($htab)
         } else {
             Write-Warning "Config.Add() Skipped $Key. Key already exists."
@@ -6746,8 +6773,14 @@ class Config {
     }
     [void] Add([hashtable]$table) {
         [ValidateNotNullOrEmpty()][hashtable]$table = $table
-        $Keys = $table.Keys | Where-Object { !$this.Contains($_) -and ($_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType') }
-        foreach ($key in $Keys) { $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key] -Force:$($key -in ('File', 'Remote')) }
+        $Keys = $table.Keys | Where-Object { !$this.HasNoteProperty($_) -and ($_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType') }
+        foreach ($key in $Keys) {
+            if ($key -notin ('File', 'Remote', 'LastWriteTime')) {
+                $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key]
+            } else {
+                $this.$key = $table[$key]
+            }
+        }
     }
     [void] Add([hashtable[]]$items) {
         foreach ($item in $items) { $this.Add($item) }
@@ -6759,22 +6792,24 @@ class Config {
         $htab = [hashtable]::new(); $htab.Add($key, $value)
         $this.Set($htab)
     }
-    [void] Set([hashtable]$item) {
-        $Keys = $item.Keys | Sort-Object -Unique
+    [void] Set([hashtable]$table) {
+        [ValidateNotNullOrEmpty()][hashtable]$table = $table
+        $Keys = $table.Keys | Where-Object { $_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType' } | Sort-Object -Unique
         foreach ($key in $Keys) {
-            $value = $item[$key]
-            [ValidateNotNullOrEmpty()][string]$key = $key
-            if ($this.psObject.Properties.Name.Contains([string]$key)) {
-                $this."$key" = $value
+            if (!$this.psObject.Properties.Name.Contains($key)) {
+                $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key]
             } else {
-                $this.Add($key, $value)
+                $this.$key = $table[$key]
             }
         }
+    }
+    [void] Set([hashtable[]]$items) {
+        foreach ($item in $items) { $this.Set($item) }
     }
     [void] Set([System.Collections.Specialized.OrderedDictionary]$dict) {
         $dict.Keys.Foreach({ $this.Set($_, $dict["$_"]) });
     }
-    [bool] Contains([string]$Name) {
+    [bool] HasNoteProperty([string]$Name) {
         [ValidateNotNullOrEmpty()][string]$Name = $Name
         return (($this | Get-Member -Type NoteProperty | Select-Object -ExpandProperty name) -contains "$Name")
     }
@@ -6799,7 +6834,7 @@ class Config {
         try {
             Write-Host "$([Config]::caller) Save Config to file: $($this.File) ..."
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to encrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
-            [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
+            $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
             Write-Host "$([Config]::caller) Save Config Complete"
         } catch {
             throw $_.Exeption
@@ -6812,7 +6847,7 @@ class Config {
             $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [Config]::caller }
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
-            $this.Import([hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } }))
+            $this.Set([hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } }))
         } catch {
             throw $_.Exeption
         } finally {
@@ -6821,25 +6856,8 @@ class Config {
     }
     [void] Import([String]$FilePath) {
         Write-Host "$([Config]::caller) Import Config: $FilePath ..." -ForegroundColor Green
-        $this.Import($this.Read($FilePath))
+        $this.Set($this.Read($FilePath))
         Write-Host "$([Config]::caller) Import Config Complete" -ForegroundColor Green
-    }
-    [void] Import([hashtable[]]$items) {
-        [ValidateNotNullOrEmpty()][hashtable[]]$items = $items
-        foreach ($item in $items) {
-            [ValidateNotNullOrEmpty()][hashtable]$item = $item
-            $Keys = $item.Keys | Where-Object { $_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType' }
-            foreach ($key in $Keys) {
-                $val = $item[$key]
-                if ($this.Contains($key)) {
-                    if ($null -ne $val) {
-                        $this.$key = $val
-                    }
-                } else {
-                    $this | Add-Member -MemberType NoteProperty -Name $key -Value $val -Force:$($key -in ('File', 'Remote'))
-                }
-            }
-        }
     }
     [void] Upload() {
         if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [InvalidArgumentException]::new('remote') }
