@@ -1871,19 +1871,19 @@ class PasswordManager {
     static [string] GetPasswordHash([string]$Passw0rd) {
         return [xconvert]::BytesToHex([Pbkdf2]::HashPassword([xconvert]::ToSecurestring($Passw0rd)))
     }
-    static [securestring] Resolve([securestring]$Password, [string]$hashSTR) {
-        return [PasswordManager]::Resolve($Password, [CryptoBase]::GetDerivedSalt($Password), $hashSTR)
+    static [securestring] Resolve([securestring]$Password, [string]$HashSTR) {
+        return [PasswordManager]::Resolve($Password, $HashSTR, [CryptoBase]::GetDerivedSalt($Password))
     }
-    static [securestring] Resolve([securestring]$Password, [byte[]]$salt, [string]$hashSTR) {
-        # AIO Pbkdf2 + HKDF. Ref: https://asecuritysite.com/powershell/enc07
+    static [securestring] Resolve([securestring]$Password, [string]$HashSTR, [byte[]]$salt) {
+        # A HKDF which also verifies its hash Ref: https://asecuritysite.com/powershell/enc07
         # ie: If this was a Powershell function it would be named Get-DerivedPassword
         $derivedKey = [securestring]::new(); [System.IntPtr]$handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
         Add-Type -AssemblyName System.Runtime.InteropServices
         Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToString($Password));
         Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
-        [ValidateNotNullOrEmpty()][string] $hashSTR = $hashSTR
+        [ValidateNotNullOrEmpty()][string] $HashSTR = $HashSTR
         [ValidateNotNullOrEmpty()][string] $Passw0rd = $Passw0rd
-        if ([Pbkdf2]::VerifyHashedPassword($Password, [xconvert]::BytesFromHex($hashSTR), $salt)) {
+        if ([Pbkdf2]::VerifyHashedPassword($Password, [xconvert]::BytesFromHex($HashSTR), $salt)) {
             try {
                 if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With Hash: $hashSTR") }
                 $derivedKey = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($Passw0rd, $salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)));
@@ -1899,112 +1899,32 @@ class PasswordManager {
             Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
         }
     }
-    static [string] CreateHOTP([string]$SECRET, [int]$Phone) {
-        return [PasswordManager]::CreateHOTP($phone, [PasswordManager]::GetOtp($SECRET))
+    # $pass = [xconvert]::TosecureString("my_pass_123")
+    # $otp = [PasswordManager]::GenerateHotp($pass, 10) # Assuming OTP expires every 10 seconds
+    # $IsValid = [PasswordManager]::VerifyHotp($InputOtp, $pass, 10)
+
+    static [int] GenerateHotp ([securestring]$password, [int]$Seconds) {
+        $counter = [BitConverter]::GetBytes([int][Math]::Floor([DateTime]::UtcNow.Second / $Seconds))
+        $hmacSha1 = [System.Security.Cryptography.HMACSHA1]::new()
+        $hmacSha1.Key = [cryptobase]::GetKey($password)
+        $hash = $hmacSha1.ComputeHash($counter); $digits = 6
+        $offset = $hash[$hash.Length - 1] -band 0x0F
+        $binary = ($hash[$offset] -band 0x7F) -shl 24 -bor ($hash[$offset + 1] -band 0xFF) -shl 16 -bor ($hash[$offset + 2] -band 0xFF) -shl 8 -bor ($hash[$offset + 3] -band 0xFF)
+        $otp = $binary % [Math]::Pow(10, $digits)
+        return $otp
     }
-
-    static [string] CreateHOTP([int]$phone, [string]$otp) {
-        return [PasswordManager]::CreateHOTP($phone, $otp, 5)
-    }
-    static [string] CreateHOTP([int]$phone, [string]$otp, [int]$expiresAfter) {
-        $ttl = $expiresAfter * 60 * 1000
-        $expires = (Get-Date).AddMilliseconds($ttl).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-        $bytes = [byte[]]::new(16)
-        [System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes($bytes)
-        $salt = [BitConverter]::ToString($bytes) -replace '-'
-        $data = "$phone.$otp.$expires.$salt"
-        Write-Host "data: " -NoNewline -ForegroundColor Green; Write-Host "$data" -ForegroundColor Blue
-        $hashBase = [FipsHmacSha256]::new().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($data))
-        $hash = "$hashBase.$expires.$salt"
-        #TODO: Implement the SMS sending function here
-        return $hash
-    }
-    static [bool] VerifyHOTP([string]$otp, [int]$phone, [string]$hash) {
-        if (-not $hash -match "\.") {
-            return $false
-        }
-
-        $hashValue, $expires, $salt = $hash -split "\."
-
-        $now = (Get-Date).Ticks / 10000
-        if ($now -gt [double]$expires) {
-            return $false
-        }
-        $data = "$phone.$otp.$expires.$salt"
-        Write-Host "data: " -NoNewline -ForegroundColor Green; Write-Host "$data" -ForegroundColor Blue
-        $newCalculatedHash = [FipsHmacSha256]::new().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($data))
-
-        if ($newCalculatedHash -eq $hashValue) {
-            return $true
+    static [bool] VerifyHotp([int]$otp, [securestring]$password, [int]$seconds) {
+        [int]$retries = $seconds;
+        for ($i = 0; $i -lt $retries; $i++) {
+            $seconds = [BitConverter]::GetBytes([int][Math]::Floor([DateTime]::UtcNow.Second / $seconds) - $i)[0]
+            $expectedOtp = [PasswordManager]::GenerateHotp($password, $seconds)
+            if ($otp -eq $expectedOtp) {
+                return $true
+            }
+            Write-Host "ret $i $otp /= $expectedOtp" -ForegroundColor Green
         }
         return $false
     }
-
-    static [string] ParseOtpUrl([string]$otpURL) {
-        # $otpURL can be decrypted text
-        if (-not [System.Uri]::IsWellFormedUriString("$otpURL", "Absolute") -or $otpURL -notmatch "^otpauth://") { Write-Host "The decrypted text is not a valid OTP URL" "Error" ; $script:FileBrowser.Dispose() ; exit 1 }
-        $parseOtpUrl =[scriptblock]::Create("[System.Web.HttpUtility]::ParseQueryString(([uri]::new('$otpURL')).Query)").Invoke()
-        $otpType = $([uri]$otpURL).Host
-        if ($otpType -eq "hotp") { Write-Warning "TOTP is only supported" }
-        if ($otpType -eq "totp" ) { $otpType = "$otpType=" }
-        $otpPeriod = if (-not [string]::IsNullOrEmpty($parseOtpUrl["period"])) { $parseOtpUrl["period"] } else { 30 }
-        $otpDigits = if (-not [string]::IsNullOrEmpty($parseOtpUrl["digits"])) { $parseOtpUrl["digits"] } else { 6 }
-        $otpSecret = $parseOtpUrl["secret"]
-        return [PasswordManager]::GetOtp("$otpSecret", $otpDigits, "$otpPeriod")
-    }
-
-    static [string] GetOtp([string]$SECRET) {
-        return [PasswordManager]::GetOtp($SECRET, 4, "5")
-    }
-    static [string] GetOtp([string]$SECRET, [int]$LENGTH, [string]$WINDOW) {
-        $hmac = New-Object -TypeName System.Security.Cryptography.HMACSHA1
-        $hmac.key = $([PasswordManager]::ConvertBase32ToHex($SECRET.ToUpper())) -replace '^0x', '' -split "(?<=\G\w{2})(?=\w{2})" | ForEach-Object { [Convert]::ToByte( $_, 16 ) }
-        $timeSpan =  $(New-TimeSpan -Start (Get-Date -Year 1970 -Month 1 -Day 1 -Hour 0 -Minute 0 -Second 0) -End (Get-Date).ToUniversalTime()).TotalSeconds
-        $rndHash = $hmac.ComputeHash([byte[]][BitConverter]::GetBytes([Convert]::ToInt64([Math]::Floor($timeSpan/$WINDOW))))
-        $toffset = $rndhash[($rndHash.Length-1)] -band 0xf
-        $fullOTP = ($rndhash[$toffset] -band 0x7f) * [math]::pow(2, 24)
-        $fullOTP += ($rndHash[$toffset + 1] -band 0xff) * [math]::pow(2, 16)
-        $fullOTP += ($rndHash[$toffset + 2] -band 0xff) * [math]::pow(2, 8)
-        $fullOTP += ($rndHash[$toffset + 3] -band 0xff)
-
-        $modNumber = [math]::pow(10, $LENGTH)
-        $otp = $fullOTP % $modNumber
-        $otp = $otp.ToString("0" * $LENGTH)
-        return $otp
-    }
-    static [string] ConvertBase32ToHex([string]$base32) {
-        $base32chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        $bits = "";
-        $hex = "";
-
-        for ($i = 0; $i -lt $base32.Length; $i++) {
-            $val = $base32chars.IndexOf($base32.Chars($i));
-            $binary = [Convert]::ToString($val, 2)
-            $str = $binary.ToString();
-            $len = 5
-            $pad = '0'
-            if (($len + 1) -ge $str.Length) {
-                while (($len - 1) -ge $str.Length) {
-                    $str = ($pad + $str)
-                }
-            }
-            $bits += $str
-        }
-
-        for ($i = 0; $i+4 -le $bits.Length; $i+=4) {
-            $chunk = $bits.Substring($i, 4)
-            # Write-Host $chunk
-            $intChunk = [Convert]::ToInt32($chunk, 2)
-            $hexChunk = '{0:x}' -f $([int]$intChunk)
-            # Write-Host $hexChunk
-            $hex = $hex + $hexChunk
-        }
-        return $hex;
-    }
-}
-
-class PasswordHash {
-    PasswordHash() {}
 }
 
 # .SYNOPSIS
