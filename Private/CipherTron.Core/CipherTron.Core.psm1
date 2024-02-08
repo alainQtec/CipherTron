@@ -1869,13 +1869,13 @@ class PasswordManager {
         return $Passw0rdHash
     }
     static [string] GetPasswordHash([string]$Passw0rd) {
-        return [xconvert]::BytesToHex([PasswordHash]::new($Passw0rd).ToArray())
+        return [xconvert]::BytesToHex([Pbkdf2]::HashPassword([xconvert]::ToSecurestring($Passw0rd)))
     }
     static [securestring] Resolve([securestring]$Password, [string]$hashSTR) {
         return [PasswordManager]::Resolve($Password, [CryptoBase]::GetDerivedSalt($Password), $hashSTR)
     }
     static [securestring] Resolve([securestring]$Password, [byte[]]$salt, [string]$hashSTR) {
-        # Generates a new securestring using HKDF. Ref: https://asecuritysite.com/powershell/enc07
+        # AIO Pbkdf2 + HKDF. Ref: https://asecuritysite.com/powershell/enc07
         # ie: If this was a Powershell function it would be named Get-DerivedPassword
         $derivedKey = [securestring]::new(); [System.IntPtr]$handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
         Add-Type -AssemblyName System.Runtime.InteropServices
@@ -1883,7 +1883,7 @@ class PasswordManager {
         Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
         [ValidateNotNullOrEmpty()][string] $hashSTR = $hashSTR
         [ValidateNotNullOrEmpty()][string] $Passw0rd = $Passw0rd
-        if ([PasswordHash]::new([xconvert]::BytesFromHex($hashSTR)).Verify($Passw0rd, $salt)) {
+        if ([Pbkdf2]::VerifyHashedPassword($Password, [xconvert]::BytesFromHex($hashSTR), $salt)) {
             try {
                 if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With Hash: $hashSTR") }
                 $derivedKey = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($Passw0rd, $salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)));
@@ -1896,11 +1896,6 @@ class PasswordManager {
             }
             return $derivedKey
         } else {
-            if ([System.Environment]::UserInteractive) {
-                # [System.Console]::Beep(600, 100); [System.Threading.Thread]::Sleep(100); [System.Console]::Beep(600, 200);
-                [System.Console]::Beep(); [System.Threading.Thread]::Sleep(100); [System.Console]::Beep();
-                Write-Verbose "[x] Wrong Password!";
-            }
             Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
         }
     }
@@ -2008,45 +2003,29 @@ class PasswordManager {
     }
 }
 
-# .SYNOPSIS
-#     PBKDF2 Password String Hashing Class.
-# .DESCRIPTION
-#     when a user inputs a password, instead of storing the password in cleartext, we hash the password and store the username and hash pair in the database table.
-#     When the user logs in, we hash the password sent and compare it to the hash connected with the provided username.
-# .EXAMPLE
-#     ## Usage Example:
-#
-#     # STEP 1. Create Hash and Store it somewhere secure.
-#     [byte[]]$hashBytes = [PasswordHash]::new("MypasswordString").ToArray();
-#     [xconvert]::BytesToHex($hashBytes) | Out-File $ReallySecureFilePath;
-#     $(Get-Item $ReallySecureFilePath).Encrypt();
-#
-#     # STEP 2. Check Password against a Stored hash.
-#     [byte[]]$hashBytes = [xconvert]::BytesFromHex($(Get-Content $ReallySecureFilePath));
-#     $hash = [PasswordHash]::new($hashBytes); $salt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring("MypasswordString"))
-#     if(!$hash.Verify("newly entered password", $salt)) { throw [System.UnauthorizedAccessException]::new() };
-#
-#     The main use is to never store the actual input password, rather keep its hash
-#-----# STEP 1. Create Hash and Store it somewhere secure.
-#     $inputpass = [xconvert]::ToSecureString("MypasswordString");
-#     $hashSTR = [PasswordHash]::new($inputpass).ToString()
-#     $paswdused = [xconvert]::Tostring([PasswordManager]::Resolve($inputpass, $hashSTR))
-#     $hashSTR | Out-File ReallySecureFilePath; # keep it in a file
-#
-#-----# STEP 2. Use the Hash to get back the actual $paswdused
-#     $paswdused = [xconvert]::Tostring([PasswordManager]::Resolve($inputpass, $(Get-Content $ReallySecureFilePath)))
-#
 class PasswordHash {
     PasswordHash() {}
 }
 
+# .SYNOPSIS
+#     A PBKDF2 implementation.
 # .DESCRIPTION
-#  Generic PBKDF2 implementation.
+#     Used for password hashing and stuff.
+#     when a user inputs a password, instead of storing the password in cleartext, we hash the password and store the username and hash pair in the database table.
+#     When the user logs in, we hash the password sent and compare it to the hash connected with the provided username.
+# .EXAMPLE
+#
+#     The main use is to never store the actual input password, rather keep its hash
+#     # STEP 1. Create Hash and Store it somewhere secure.
+#     $hashSTR = [xconvert]::BytesToHex([Pbkdf2]::HashPassword([xconvert]::ToSecurestring("My_passw0rdSTR@123")))
+#     $hashSTR | Out-File ReallySecureFilePath; # keep the hash string it in a file Or in a database
+#
+#     # STEP 2. Use the Hash to verify if $InputPassword is legit, then login/orNot
+#     [Pbkdf2]::VerifyHashedPassword([xconvert]::ToSecurestring($InputPassword), [xconvert]::BytesFromHex((cat ReallySecureFilePath)))
 # .NOTES
-#   Inspired by:
-#   https://asecuritysite.com/powershell/ps_pbkdf2
-#   https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
-#   https://raw.githubusercontent.com/henkmollema/CryptoHelper/master/src/CryptoHelper/Crypto.cs
+#     Inspired by:
+#     https://asecuritysite.com/powershell/ps_pbkdf2
+#     https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
 class Pbkdf2 {
     [byte[]] $Salt
     [int] $IterationCount
@@ -2070,41 +2049,8 @@ class Pbkdf2 {
         $ob = [Pbkdf2]::Create($password, $salt)
         $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
     }
-    static [Pbkdf2] Create([byte[]]$bytes) {
-        $dsalt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
-        return [Pbkdf2]::Create($bytes, $dsalt)
-    }
-    static [Pbkdf2] Create([securestring]$password) {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes([XConvert]::Tostring($password))
-        $dsalt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
-        return [Pbkdf2]::Create($bytes, $dsalt)
-    }
-    static [Pbkdf2] Create([byte[]]$password, [byte[]]$salt) {
-        return [Pbkdf2]::Create([byte[]]$password, [System.Security.Cryptography.HMACSHA256]::new(), [byte[]]$salt, 10000)
-    }
-    static [Pbkdf2] Create([securestring]$password, [byte[]]$salt) {
-        return [Pbkdf2]::Create([System.Text.Encoding]::UTF8.GetBytes([XConvert]::Tostring($password)), $salt)
-    }
-    static [Pbkdf2] Create([byte[]]$password, [System.Security.Cryptography.HMAC]$algorithm, [byte[]]$salt, [int]$iterations) {
-        if (!$algorithm) { throw "Algorithm cannot be null." }
-        if (!$salt) { throw "Salt cannot be null." }
-        if (!$password) { throw "Password cannot be null." }
-        $ob = [Pbkdf2]::new()
-        $ob.Algorithm = $algorithm
-        $ob.Algorithm.Key = $password
-        $ob.Salt = $salt
-        $ob.IterationCount = $iterations
-        $ob.BlockSize = $ob.Algorithm.HashSize / 8
-        $ob.BufferBytes = [byte[]]::new($ob.BlockSize)
-        return $ob
-    }
-    [byte[]] Static HashPassword([securestring]$password) {
-        return [Pbkdf2]::new($password).GetBytes([System.Text.Encoding]::UTF8.GetBytes([XConvert]::Tostring($password)).Length * 2)
-    }
-    [bool] static VerifyHashedPassword([byte[]]$hashedPassword, [byte[]]$password) {
-        $expectedHash = [Pbkdf2]::new($password).GetBytes($password.Length * 2)
-        # $expectedHash -ceq $hashedPassword
-        return [Pbkdf2]::TestEqualByteArrays($expectedHash, $hashedPassword)
+    [byte[]] GetBytes() {
+        return $this.GetBytes(32)
     }
     [byte[]] GetBytes([int]$count) {
         # Returns a pseudo-random key. $count is number of bytes to return.
@@ -2162,8 +2108,48 @@ class Pbkdf2 {
             return $bytes
         }
     }
-    # Compares two byte arrays for equality, specifically written so that the loop is not optimized.
+    static [Pbkdf2] Create([byte[]]$bytes) {
+        $dsalt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
+        return [Pbkdf2]::Create($bytes, $dsalt)
+    }
+    static [Pbkdf2] Create([securestring]$password) {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes([XConvert]::Tostring($password))
+        $dsalt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
+        return [Pbkdf2]::Create($bytes, $dsalt)
+    }
+    static [Pbkdf2] Create([byte[]]$password, [byte[]]$salt) {
+        return [Pbkdf2]::Create([byte[]]$password, [System.Security.Cryptography.HMACSHA256]::new(), [byte[]]$salt, 10000)
+    }
+    static [Pbkdf2] Create([securestring]$password, [byte[]]$salt) {
+        return [Pbkdf2]::Create([System.Text.Encoding]::UTF8.GetBytes([XConvert]::Tostring($password)), $salt)
+    }
+    static [Pbkdf2] Create([byte[]]$password, [System.Security.Cryptography.HMAC]$algorithm, [byte[]]$salt, [int]$iterations) {
+        if (!$algorithm) { throw "Algorithm cannot be null." }
+        if (!$salt) { throw "Salt cannot be null." }
+        if (!$password) { throw "Password cannot be null." }
+        $ob = [Pbkdf2]::new()
+        $ob.Algorithm = $algorithm
+        $ob.Algorithm.Key = $password
+        $ob.Salt = $salt
+        $ob.IterationCount = $iterations
+        $ob.BlockSize = $ob.Algorithm.HashSize / 8
+        $ob.BufferBytes = [byte[]]::new($ob.BlockSize)
+        return $ob
+    }
+    static [byte[]] HashPassword([securestring]$password) {
+        return [Pbkdf2]::new($password).GetBytes()
+    }
+    static [byte[]] HashPassword([securestring]$password, [byte[]]$salt) {
+        return [Pbkdf2]::new($password, $salt).GetBytes()
+    }
+    static [bool] VerifyHashedPassword([securestring]$password, [byte[]]$InputHash) {
+        return [Pbkdf2]::TestEqualByteArrays([Pbkdf2]::new($password).GetBytes(), $InputHash)
+    }
+    static [bool] VerifyHashedPassword([securestring]$password, [byte[]]$InputHash, [byte[]]$salt) {
+        return [Pbkdf2]::TestEqualByteArrays([Pbkdf2]::new($password, $salt).GetBytes(), $InputHash)
+    }
     static [bool] TestEqualByteArrays([byte[]]$a, [byte[]]$b) {
+        # Compares two byte arrays for equality, specifically written so that the loop is not optimized.
         if ($a -eq $b) {
             return $true
         }
@@ -5200,7 +5186,7 @@ class k3y {
     }
     [securestring]hidden ResolvePassword([securestring]$Password) {
         if (!$this.IsHashed()) {
-            $hashSTR = [string]::Empty; Set-Variable -Name hashSTR -Scope local -Visibility Private -Option Private -Value $([string][xconvert]::BytesToHex(([PasswordHash]::new([xconvert]::ToString($password)).ToArray())));
+            $hashSTR = [string]::Empty; Set-Variable -Name hashSTR -Scope local -Visibility Private -Option Private -Value $([string][xconvert]::BytesToHex([Pbkdf2]::HashPassword($password)));
             & ([scriptblock]::Create("`$this.User.psobject.Properties.Add([psscriptproperty]::new('Password', { ConvertTo-SecureString -AsPlainText -String '$hashSTR' -Force }))"));
         }
         $SecHash = $this.User.Password;
