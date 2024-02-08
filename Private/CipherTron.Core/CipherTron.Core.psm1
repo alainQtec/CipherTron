@@ -2036,8 +2036,6 @@ class PasswordManager {
 #-----# STEP 2. Use the Hash to get back the actual $paswdused
 #     $paswdused = [xconvert]::Tostring([PasswordManager]::Resolve($inputpass, $(Get-Content $ReallySecureFilePath)))
 #
-# .NOTES
-#     https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
 class PasswordHash {
     [byte[]]$hash # The pbkdf2 Hash
     [byte[]]$salt
@@ -2062,7 +2060,7 @@ class PasswordHash {
         [void][Array]::Copy($salt, 0, $this.salt, 0, $this.SaltSize)
         [void][Array]::Copy($hash, 0, $this.hash, 0, $this.HashSize)
     }
-    [byte[]] ToArray() {
+    [byte[]]ToArray() {
         [byte[]]$hashBytes = [byte[]]::new($this.SaltSize + $this.HashSize);
         [void][Array]::Copy($this.salt, 0, $hashBytes, 0, $this.SaltSize);
         [void][Array]::Copy($this.hash, 0, $hashBytes, $this.SaltSize, $this.HashSize)
@@ -2089,6 +2087,152 @@ class PasswordHash {
         }
         return $rs
     }
+}
+class PBKDFHelper {
+    # .NOTES
+    #     https://asecuritysite.com/powershell/ps_pbkdf2
+    #     https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
+    #     https://raw.githubusercontent.com/henkmollema/CryptoHelper/master/src/CryptoHelper/Crypto.cs
+    hidden static [int]$PBKDF2IterCount = 10000
+    hidden static [int]$PBKDF2SubkeyLength = 32 # 256 bits
+    hidden static [int]$SaltSize = 16 # 128 bits
+
+    static [string]HashPassword([string]$password) {
+        if ($null -eq $password) {
+            throw [System.ArgumentNullException]::new("password")
+        }
+        return [PBKDFHelper]::HashPasswordInternal($password)
+    }
+
+    static [bool]VerifyHashedPassword([string]$hashedPassword, [string]$password) {
+        if ($null -eq $hashedPassword) {
+            throw [System.ArgumentNullException]::new("hashedPassword")
+        }
+        if ($null -eq $password) {
+            throw [System.ArgumentNullException]::new("password")
+        }
+        return [PBKDFHelper]::VerifyHashedPasswordInternal($hashedPassword, $password)
+    }
+
+    hidden static [string]HashPasswordInternal([string]$password) {
+        $bytes = [PBKDFHelper]::HashPasswordInternal($password, 'HMACSHA256', [PBKDFHelper]::PBKDF2IterCount, [PBKDFHelper]::SaltSize, [PBKDFHelper]::PBKDF2SubkeyLength)
+        return [System.Convert]::ToBase64String($bytes)
+    }
+
+    hidden static [byte[]]HashPasswordInternal([string]$password, [string]$prf, [int]$iterCount, [int]$saltSize, [int]$numBytesRequested) {
+
+        # Produce a version 3 (see comment above) text hash.
+        $salt = [byte[]]::new($saltSize); [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+
+        # Use Rfc2898DeriveBytes instead of KeyDerivation.Pbkdf2
+        $pbkdf2 =  [System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $salt, $iterCount)
+        $subkey = $pbkdf2.GetBytes($numBytesRequested)
+
+        $outputBytes = New-Object byte[] (13 + $salt.Length + $subkey.Length)
+
+        # Write format marker.
+        $outputBytes[0] = 0x01
+
+        # Write hashing algorithm version.
+        [PBKDFHelper]::WriteNetworkByteOrder($outputBytes, 1, [uint32]$prf)
+
+        # Write iteration count of the algorithm.
+        [PBKDFHelper]::WriteNetworkByteOrder($outputBytes, 5, [uint32]$iterCount)
+
+        # Write size of the salt.
+        [PBKDFHelper]::WriteNetworkByteOrder($outputBytes, 9, [uint32]$saltSize)
+
+        # Write the salt.
+        [System.Buffer]::BlockCopy($salt, 0, $outputBytes, 13, $salt.Length)
+
+        # Write the subkey.
+        [System.Buffer]::BlockCopy($subkey, 0, $outputBytes, 13 + $saltSize, $subkey.Length)
+        return $outputBytes
+    }
+    hidden static [bool]VerifyHashedPasswordInternal([string]$hashedPassword, [string]$password) {
+        $decodedHashedPassword = [System.Convert]::FromBase64String($hashedPassword)
+    
+        if ($decodedHashedPassword.Length -eq 0) {
+            return $false
+        }
+    
+        try {
+            # Verify hashing format.
+            if ($decodedHashedPassword[0] -ne 0x01) {
+                # Unknown format header.
+                return $false
+            }
+    
+            # Read hashing algorithm version.
+            $prf = [PBKDFHelper]::ReadNetworkByteOrder($decodedHashedPassword, 1)
+    
+            # Read iteration count of the algorithm.
+            $iterCount = [PBKDFHelper]::ReadNetworkByteOrder($decodedHashedPassword, 5)
+    
+            # Read size of the salt.
+            $saltLength = [PBKDFHelper]::ReadNetworkByteOrder($decodedHashedPassword, 9)
+    
+            # Verify the salt size: >= 128 bits.
+            if ($saltLength -lt 16) {
+                return $false
+            }
+    
+            # Read the salt.
+            $salt = New-Object byte[] $saltLength
+            [System.Buffer]::BlockCopy($decodedHashedPassword, 13, $salt, 0, $salt.Length)
+    
+            # Verify the subkey length >= 128 bits.
+            $subkeyLength = $decodedHashedPassword.Length - 13 - $salt.Length
+            if ($subkeyLength -lt 16) {
+                return $false
+            }
+    
+            # Read the subkey.
+            $expectedSubkey = New-Object byte[] $subkeyLength
+            [System.Buffer]::BlockCopy($decodedHashedPassword, 13 + $salt.Length, $expectedSubkey, 0, $expectedSubkey.Length)
+    
+            # Hash the given password and verify it against the expected subkey.
+            $pbkdf2 = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($password, $salt, $iterCount)
+            $actualSubkey = $pbkdf2.GetBytes($subkeyLength)
+            return [PBKDFHelper]::ByteArraysEqual($actualSubkey, $expectedSubkey)
+        }
+        catch {
+            # This should never occur except in the case of a malformed payload, where
+            # we might go off the end of the array. Regardless, a malformed payload
+            # implies verification failed.
+            return $false
+        }
+    }
+    hidden static [uint32]ReadNetworkByteOrder([byte[]]$buffer, [int]$offset) {
+        return ([uint32]$buffer[$offset + 0] -shl 24) -bor
+               ([uint32]$buffer[$offset + 1] -shl 16) -bor
+               ([uint32]$buffer[$offset + 2] -shl 8) -bor
+               ([uint32]$buffer[$offset + 3])
+    }
+    
+    hidden static [void]WriteNetworkByteOrder([byte[]]$buffer, [int]$offset, [uint32]$value) {
+        $buffer[$offset + 0] = [byte]($value -shr 24)
+        $buffer[$offset + 1] = [byte]($value -shr 16)
+        $buffer[$offset + 2] = [byte]($value -shr 8)
+        $buffer[$offset + 3] = [byte]($value -shr 0)
+    }
+    
+    hidden static [bool]ByteArraysEqual([byte[]]$a, [byte[]]$b) {
+        if ($a -eq $b) {
+            return $true
+        }
+    
+        if ($null -eq $a -or $null -eq $b -or $a.Length -ne $b.Length) {
+            return $false
+        }
+    
+        $areSame = $true
+        for ($i = 0; $i -lt $a.Length; $i++) {
+            $areSame = $areSame -band ($a[$i] -eq $b[$i])
+        }
+        return $areSame
+    }
+    
 }
 #endregion PasswordManager
 
