@@ -957,6 +957,34 @@ class XConvert : System.ComponentModel.TypeConverter {
         }
         return $objs
     }
+    static [byte[]] FromBase32String([string]$string) {
+        [ValidateNotNullOrEmpty()][string]$string = $string
+        $bigInteger = [Numerics.BigInteger]::Zero
+        foreach ($char in ($string.ToUpper() -replace '[^A-Z2-7]').GetEnumerator()) {
+            $bigInteger = ($bigInteger -shl 5) -bor ('ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.IndexOf($char))
+        }
+        [byte[]]$bytes = $bigInteger.ToByteArray()
+        # BigInteger sometimes adds a 0 byte to the end,
+        # if the positive number could be mistaken as a two's complement negative number.
+        # If it happens, we need to remove it.
+        if ($bytes[-1] -eq 0) {
+            $bytes = $bytes[0..($bytes.Count - 2)]
+        }
+        # BigInteger stores bytes in Little-Endian order, but we need them in Big-Endian order
+        [array]::Reverse($bytes)
+        return $bytes
+    }
+    static [string] ToBase32String([byte[]]$bytes) {
+        $byteArrayAsBinaryString = -join $bytes.ForEach{
+            [Convert]::ToString($_, 2).PadLeft(8, '0')
+        }
+        $string = [regex]::Replace($byteArrayAsBinaryString, '.{5}', {
+                param($Match)
+                'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'[[Convert]::ToInt32($Match.Value, 2)]
+            }
+        )
+        return $string
+    }
     [PsCustomObject] static ToPSObject([System.Object]$Obj) {
         $PSObj = [PSCustomObject]::new();
         $Obj | Get-Member -MemberType Properties | ForEach-Object {
@@ -1899,10 +1927,10 @@ class PasswordManager {
             Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
         }
     }
-    # $pass = [xconvert]::TosecureString("my_pass_123")
-    # $otp = [PasswordManager]::GenerateHotp($pass, 10) # Assuming OTP expires every 10 seconds
-    # $IsValid = [PasswordManager]::VerifyHotp($InputOtp, $pass, 10)
-
+    static [int] GenerateTOTP([securestring]$password) {
+        # Generates a new time-based OTP for MFA
+        return [int][TOTP]::new([XConvert]::ToString($password)).ToString()
+    }
     static [int] GenerateHotp ([securestring]$password, [int]$Seconds) {
         $counter = [BitConverter]::GetBytes([int][Math]::Floor([DateTime]::UtcNow.Second / $Seconds))
         $hmacSha1 = [System.Security.Cryptography.HMACSHA1]::new()
@@ -1914,19 +1942,68 @@ class PasswordManager {
         return $otp
     }
     static [bool] VerifyHotp([int]$otp, [securestring]$password, [int]$seconds) {
-        [int]$retries = $seconds;
-        for ($i = 0; $i -lt $retries; $i++) {
-            $seconds = [BitConverter]::GetBytes([int][Math]::Floor([DateTime]::UtcNow.Second / $seconds) - $i)[0]
-            $expectedOtp = [PasswordManager]::GenerateHotp($password, $seconds)
-            if ($otp -eq $expectedOtp) {
-                return $true
-            }
-            Write-Host "ret $i $otp /= $expectedOtp" -ForegroundColor Green
-        }
         return $false
     }
 }
 
+class TOTP {
+    [int]$Seconds=0
+    [int]$TimeShift=0
+    [int]$TimeStep=30
+    [int]$Position = 0
+    [int]$Digits=6
+    [byte[]]$bytes
+
+    TOTP([string]$SecretKey) {
+        if ($this.Digits -le 0) {
+            $this.Digits = 6 # Can't be zero so default to six
+        }
+        if ($this.Seconds -le 0) {
+            # Can't be zero so default to current time
+            $this.Seconds = [int]([datetime]::Now - (Get-Date).ToUniversalTime()).TotalSeconds
+        }
+        if ($this.TimeStep -le 0) {
+            $this.TimeStep = 30 # Can't be zero, so default to 30 seconds
+        }
+        $this.Seconds = ($this.Seconds + $this.TimeShift) / $this.TimeStep
+
+        [byte[]]$timeBytes = @(0, 0, 0, 0, [byte](([int]$this.Seconds -shr 24) -band 255), [byte](([int]$this.Seconds -shr 16) -band 255), [byte](([int]$this.Seconds -shr  8) -band 255), [byte]( [int]$this.Seconds -band 255))
+        # Integer has only 4 bytes so the first four are zeros
+
+        $hOtpFullResult = 1073741840; $divider=0
+        if ($this.Digits -ge 1 -and $this.Digits -le 9) {
+            $divider = [Math]::Pow(10, $this.Digits)
+        } elseif ($this.Digits -eq $hOtpFullResult) {
+            $divider = 0
+        } else {
+            throw "Only 1-9 digits are accepted!"
+        }
+
+        # Calculate the hash using the secret as a key
+        [byte[]]$decodedSecret = [XConvert]::FromBase32String($SecretKey)
+        $HmacSHA1 = [Security.Cryptography.HMACSHA1]::new($decodedSecret)
+        $hmacSize = 20
+        $hash = $HmacSHA1.ComputeHash($TimeBytes)
+        # Generate HOTP bytes:
+        if ($divider -gt 0) {
+            if ($this.Position -le 0 -or  $this.Position -ge ($hmacSize - 4)) {
+                $this.Position = $hash[$hmacSize- 1] -band 15
+            }
+            # From the hash
+            $retVal = ($hash[$this.Position] -band 127) -shl 24
+            $retVal = $retVal -bor ($hash[$this.Position + 1] -band 255) -shl 16
+            $retVal = $retVal -bor ($hash[$this.Position + 2] -band 255) -shl  8
+            $retVal = $retVal -bor ($hash[$this.Position + 3] -band 255)
+            $retVal = $retVal % $divider
+            $this.bytes = [xconvert]::FromBase32String($retVal)
+        } else {
+            $this.bytes = $hash
+        }
+    }
+    [string] ToString() {
+        return [XConvert]::BytesToHex($this.bytes)
+    }
+}
 # .SYNOPSIS
 #     A PBKDF2 implementation.
 # .DESCRIPTION
@@ -1941,7 +2018,8 @@ class PasswordManager {
 #     $hashSTR | Out-File ReallySecureFilePath; # keep the hash string it in a file Or in a database
 #
 #     # STEP 2. Use the Hash to verify if $InputPassword is legit, then login/orNot
-#     [Pbkdf2]::VerifyHashedPassword([xconvert]::ToSecurestring($InputPassword), [xconvert]::BytesFromHex((cat ReallySecureFilePath)))
+#     $InputPassword = "My_passw0rdSTR@123"
+#     $IsValidPasswd = [Pbkdf2]::VerifyHashedPassword([xconvert]::ToSecurestring($InputPassword), [xconvert]::BytesFromHex((cat ReallySecureFilePath)))
 # .NOTES
 #     Inspired by:
 #     https://asecuritysite.com/powershell/ps_pbkdf2
@@ -1950,7 +2028,7 @@ class Pbkdf2 {
     [byte[]] $Salt
     [int] $IterationCount
     [int] $BlockSize
-    [uint] $BlockIndex
+    [UInt32] $BlockIndex
     [byte[]] $BufferBytes
     [int] $BufferStartIndex
     [int] $BufferEndIndex
@@ -2016,11 +2094,11 @@ class Pbkdf2 {
                 $finalHash[$j] = [byte]($finalHash[$j] -bxor $hash1[$j])
             }
         }
-        if ($this.BlockIndex -eq [uint]::MaxValue) { throw "Derived key too long." }
+        if ($this.BlockIndex -eq [UInt32]::MaxValue) { throw "Derived key too long." }
         $this.BlockIndex += 1
         return $finalHash
     }
-    [byte[]] GetBytesFromInt([uint] $i) {
+    [byte[]] GetBytesFromInt([UInt32] $i) {
         $bytes = [BitConverter]::GetBytes($i)
         if ([BitConverter]::IsLittleEndian) {
             return @($bytes[3], $bytes[2], $bytes[1], $bytes[0])
