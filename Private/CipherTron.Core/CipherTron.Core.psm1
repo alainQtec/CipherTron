@@ -1,30 +1,29 @@
-<#
-.SYNOPSIS
-    Ciphertron is a personnal Cryptography assistance bot writen Purelly written in PowerShell
-.DESCRIPTION
-    CipherTron can do all sorts of stuff:
-        + It can act as your Password manger.
-        + It can also be used as a simple chat bot (This is still in Beta)
-    This is the Core, so all ../CipherTron.psm1 functions are built based on classes in this file.
-.NOTES
-    [+] Most of the methods work. (Most).
-    [+] This file is over 4000 lines of code (All in One), so use regions code folding if your editor supports it.
-.LINK
-    https://gist.github.com/alainQtec/217860de99e8ddb89a8820add6f6980f
-.LINK
-    https://github.com/alainQtec/CipherTron/blob/main/Private/CipherTron.Core/CipherTron.Core.psm1
-.EXAMPLE
-    iex $((Invoke-RestMethod -Method Get https://api.github.com/gists/217860de99e8ddb89a8820add6f6980f).files.'CipherTron.Core.ps1'.content)
-    $bot = [CipherTron]::new()
-    $bot.Chat()
-#>
-#Requires -Version 5.1
 using namespace System.IO
 using namespace System.Web
 using namespace System.Text
 using namespace System.Net.Http
 using namespace System.Security
 using namespace System.Runtime.InteropServices
+
+# .SYNOPSIS
+#     Ciphertron is a personnal Cryptography assistance bot writen Purelly written in PowerShell
+# .DESCRIPTION
+#     CipherTron can do all sorts of stuff:
+#         + It can act as your Password manger.
+#         + It can also be used as a simple chat bot (This is still in Beta)
+#     This is the Core, so all ../CipherTron.psm1 functions are built based on classes in this file.
+# .NOTES
+#     [+] Most of the methods work. (Most).
+#     [+] This file is over 4000 lines of code (All in One), so use regions code folding if your editor supports it.
+# .LINK
+#     https://gist.github.com/alainQtec/217860de99e8ddb89a8820add6f6980f
+# .LINK
+#     https://github.com/alainQtec/CipherTron/blob/main/Private/CipherTron.Core/CipherTron.Core.psm1
+# .EXAMPLE
+#     iex $((Invoke-RestMethod -Method Get https://api.github.com/gists/217860de99e8ddb89a8820add6f6980f).files.'CipherTron.Core.ps1'.content)
+#     $bot = [CipherTron]::new()
+#     $bot.Chat()
+#Requires -Version 5.1
 
 # Load Microsoft.PowerShell.Utility.dll:
 [void][System.Reflection.Assembly]::Load([System.IO.File]::ReadAllBytes((Get-Command Trace-Command).dll))
@@ -1999,6 +1998,10 @@ class TOTP {
         } else {
             $this.bytes = $hash
         }
+    }
+    [bool] IsValid() {
+        # checks if the tOTP is still valid
+        return $false
     }
     [string] ToString() {
         return [XConvert]::BytesToHex($this.bytes)
