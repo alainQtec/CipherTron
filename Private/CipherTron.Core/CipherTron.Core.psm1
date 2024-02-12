@@ -1950,97 +1950,27 @@ class PasswordManager {
 }
 
 class TPass {
-    [int]$TimeShift=0
-    [int]$TimeStep=30
-    [int]$Digits=6
-    [byte[]]$bytes
-    static [int]$Seconds=0
-    static [int]$Position=0
-    static [int]$divider=0
+    hidden [ValidateNotNullOrEmpty()][byte[]]$hexbytes
+    hidden [ValidateNotNullOrEmpty()][securestring]$key
 
-    TPass([securestring]$password, [datetime]$date) {
-        $SecretKey = [string]::Empty;
-        Set-Variable -Name SecretKey -Scope Local -Visibility Private -Option Private -Value ([XConvert]::Tostring($password));
-        [ValidateNotNullOrEmpty()][string]$SecretKey = $SecretKey
-        if ($this.Digits -le 0) {
-            $this.Digits = 6 # Can't be zero so default to six
-        }
-        if ([TPass]::Seconds -le 0) {
-            # Can't be zero so default to current time
-            [TPass]::Seconds = [int]($date - (Get-Date).ToUniversalTime()).TotalSeconds
-            Write-Verbose "[TPass]::Seconds : $([TPass]::Seconds)"
-            # $t = [DateTime]::Now.ToFileTime()
-            # $b = [System.Text.Encoding]::UTF8.GetBytes([DateTime]::Now.ToFileTime())
-            # [DateTime]::FromFileTime([long]::Parse($t))
-        }
-        if ($this.TimeStep -le 0) {
-            $this.TimeStep = 30 # Can't be zero, so default to 30 seconds
-        }
-        [TPass]::Seconds = ([TPass]::Seconds + $this.TimeShift) / $this.TimeStep
-
-        $hOtpFullResult = 1073741840;
-        if ($this.Digits -ge 1 -and $this.Digits -le 9) {
-            [TPass]::divider = [Math]::Pow(10, $this.Digits)
-        } elseif ($this.Digits -eq $hOtpFullResult) {
-            [TPass]::divider = 0
-        } else {
-            throw "Only 1-9 digits are accepted!"
-        }
-        # Calculate the hash using the secret as a key
-        $this.bytes = [TPass]::GetBytes($password, [DateTime]::Now)
-    }
-    static [byte[]] GetBytes([securestring]$password, [datetime]$date) {
-        $filetime = $date.ToFileTime()
-        Write-Verbose "FileTime: $filetime"
-        $HmacSHA1 = [Security.Cryptography.HMACSHA1]::new([XConvert]::FromBase32String([XConvert]::Tostring($password)))
-        $hmacSize = 20
-        # Integer has only 4 bytes so the first four are zeros
-        [byte[]]$timeBytes = @(0, 0, 0, 0, [byte](([int][TPass]::Seconds -shr 24) -band 255), [byte](([int][TPass]::Seconds -shr 16) -band 255), [byte](([int][TPass]::Seconds -shr  8) -band 255), [byte]( [int][TPass]::Seconds -band 255))
-        $shaBytes = $HmacSHA1.ComputeHash($TimeBytes)
-        # Generate HOTP bytes:
-        if ([TPass]::divider -gt 0) {
-            if ([TPass]::Position -le 0 -or  [TPass]::Position -ge ($hmacSize - 4)) {
-                [TPass]::Position = $shaBytes[$hmacSize- 1] -band 15
-            }
-            $retVal = ($shaBytes[[TPass]::Position] -band 127) -shl 24
-            $retVal = $retVal -bor ($shaBytes[[TPass]::Position + 1] -band 255) -shl 16
-            $retVal = $retVal -bor ($shaBytes[[TPass]::Position + 2] -band 255) -shl  8
-            $retVal = $retVal -bor ($shaBytes[[TPass]::Position + 3] -band 255)
-            $retVal = $retVal % [TPass]::divider
-            $shaBytes = [xconvert]::FromBase32String($retVal)
-        }
-        return [shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes($filetime), $shaBytes, $password)
+    TPass([securestring]$password, [int]$seconds) {
+        $this.key = $password; [datetime]$date = [Datetime]::Now.AddSeconds($seconds)
+        $this.Hexbytes = [shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes($date.ToFileTime()), [cryptoBase]::GetDerivedSalt($this.key), $this.key)
     }
     [bool] IsValid() {
-        return [TPass]::Validate($this.ToString())
+        return [TPass]::Validate($this.ToString(), $this.key)
+    }
+    [string] ToString() {
+        return [XConvert]::BytesToHex($this.hexbytes)
     }
     static [bool] Validate([string]$tpassHex, [securestring]$password) {
         # Parse TOTP string to byte array
-        # $tpassBytes = [XConvert]::BytesFromHex($tpassHex)
-        # $secrBytes = $null
-
-        # $totpBytes = [xconvert]::BytesFromHex($tOtpndSecret[0])
-
-        # Calculate current TOTP value
-        # $Time = [int]([datetime]::Now - (Get-Date).ToUniversalTime()).TotalSeconds
-        # $totp = [TPass]::new($tOtstr)
-        # $currentTotpBytes = $totp.bytes
-
-        # # Compare calculated TOTP with provided TOTP string
-        # if ($currentTotpBytes.Length -eq $totpBytes.Length) {
-        #     for ($i = 0; $i -lt $currentTotpBytes.Length; $i++) {
-        #         if ($currentTotpBytes[$i] -ne $totpBytes[$i]) {
-        #             return $false
-        #         }
-        #     }
-        #     return $true
-        # } else {
-        #     return $false
-        # }
-        return $false
-    }
-    [string] ToString() {
-        return [XConvert]::BytesToHex($this.bytes)
+        $tpsBytes = [XConvert]::BytesFromHex($tpassHex)
+        ($fb, $n) = [shuffl3r]::Split($tpsBytes, $password, 16)
+        $ht = [DateTime]::FromFileTime([long]::Parse([System.Text.Encoding]::UTF8.GetString($fb)))
+        $rs = ($ht - [Datetime]::Now).TotalSeconds
+        Write-Verbose "RemSeconds: $rs"
+        return $rs -ge 0
     }
 }
 # .SYNOPSIS
