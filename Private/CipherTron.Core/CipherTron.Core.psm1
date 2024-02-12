@@ -426,23 +426,27 @@ class CryptoBase {
         return $s4lt
     }
     static [byte[]] GetKey() {
-        return [CryptoBase]::GetKey(2);
+        return [CryptoBase]::GetKey(16);
     }
-    static [byte[]] GetKey([int]$iterations) {
-        $password = $null; $salt = $null;
-        Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([PasswordManager]::GeneratePassword()));
-        Set-Variable -Name salt -Scope Local -Visibility Private -Option Private -Value $([CryptoBase]::GetSalt($Iterations));
-        return [CryptoBase]::GetKey($password, $salt)
+    static [byte[]] GetKey([int]$Length) {
+        $password = $null; Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([PasswordManager]::GeneratePassword()));
+        return [CryptoBase]::GetKey($password, $Length)
     }
     static [byte[]] GetKey([securestring]$password) {
-        return [CryptoBase]::GetKey($password, $([System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())[0..15]))
+        return [CryptoBase]::GetKey($password, 16)
+    }
+    static [byte[]] GetKey([securestring]$password, [int]$Length) {
+        return [CryptoBase]::GetKey($password, [CryptoBase]::GetDerivedSalt($password), $Length)
     }
     static [byte[]] GetKey([securestring]$password, [byte[]]$salt) {
+        return [CryptoBase]::GetKey($password, $salt, 16)
+    }
+    static [byte[]] GetKey([securestring]$password, [byte[]]$salt, [int]$Length) {
         $rfc2898 = $null; $key = $null;
         Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $password;
         Set-Variable -Name salt -Scope Local -Visibility Private -Option Private -Value $salt;
         Set-Variable -Name rfc2898 -Scope Local -Visibility Private -Option Private -Value $([System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $salt));
-        Set-Variable -Name key -Scope Local -Visibility Private -Option Private -Value $($rfc2898.GetBytes(16));
+        Set-Variable -Name key -Scope Local -Visibility Private -Option Private -Value $($rfc2898.GetBytes($Length));
         return $key
     }
     # can be used to generate random IV
@@ -1928,7 +1932,7 @@ class PasswordManager {
     }
     static [int] GenerateTOTP([securestring]$password) {
         # Generates a new time-based OTP for MFA
-        return [int][TOTP]::new([XConvert]::ToString($password)).ToString()
+        return [int][TPass]::new([XConvert]::ToString($password)).ToString()
     }
     static [int] GenerateHotp ([securestring]$password, [int]$Seconds) {
         $counter = [BitConverter]::GetBytes([int][Math]::Floor([DateTime]::UtcNow.Second / $Seconds))
@@ -1945,62 +1949,94 @@ class PasswordManager {
     }
 }
 
-class TOTP {
-    [int]$Seconds=0
+class TPass {
     [int]$TimeShift=0
     [int]$TimeStep=30
-    [int]$Position = 0
     [int]$Digits=6
     [byte[]]$bytes
+    static [int]$Seconds=0
+    static [int]$Position=0
+    static [int]$divider=0
 
-    TOTP([string]$SecretKey) {
+    TPass([securestring]$password, [datetime]$date) {
+        $SecretKey = [string]::Empty;
+        Set-Variable -Name SecretKey -Scope Local -Visibility Private -Option Private -Value ([XConvert]::Tostring($password));
+        [ValidateNotNullOrEmpty()][string]$SecretKey = $SecretKey
         if ($this.Digits -le 0) {
             $this.Digits = 6 # Can't be zero so default to six
         }
-        if ($this.Seconds -le 0) {
+        if ([TPass]::Seconds -le 0) {
             # Can't be zero so default to current time
-            $this.Seconds = [int]([datetime]::Now - (Get-Date).ToUniversalTime()).TotalSeconds
+            [TPass]::Seconds = [int]($date - (Get-Date).ToUniversalTime()).TotalSeconds
+            Write-Verbose "[TPass]::Seconds : $([TPass]::Seconds)"
+            # $t = [DateTime]::Now.ToFileTime()
+            # $b = [System.Text.Encoding]::UTF8.GetBytes([DateTime]::Now.ToFileTime())
+            # [DateTime]::FromFileTime([long]::Parse($t))
         }
         if ($this.TimeStep -le 0) {
             $this.TimeStep = 30 # Can't be zero, so default to 30 seconds
         }
-        $this.Seconds = ($this.Seconds + $this.TimeShift) / $this.TimeStep
+        [TPass]::Seconds = ([TPass]::Seconds + $this.TimeShift) / $this.TimeStep
 
-        [byte[]]$timeBytes = @(0, 0, 0, 0, [byte](([int]$this.Seconds -shr 24) -band 255), [byte](([int]$this.Seconds -shr 16) -band 255), [byte](([int]$this.Seconds -shr  8) -band 255), [byte]( [int]$this.Seconds -band 255))
-        # Integer has only 4 bytes so the first four are zeros
-
-        $hOtpFullResult = 1073741840; $divider=0
+        $hOtpFullResult = 1073741840;
         if ($this.Digits -ge 1 -and $this.Digits -le 9) {
-            $divider = [Math]::Pow(10, $this.Digits)
+            [TPass]::divider = [Math]::Pow(10, $this.Digits)
         } elseif ($this.Digits -eq $hOtpFullResult) {
-            $divider = 0
+            [TPass]::divider = 0
         } else {
             throw "Only 1-9 digits are accepted!"
         }
-
         # Calculate the hash using the secret as a key
-        [byte[]]$decodedSecret = [XConvert]::FromBase32String($SecretKey)
-        $HmacSHA1 = [Security.Cryptography.HMACSHA1]::new($decodedSecret)
+        $this.bytes = [TPass]::GetBytes($password, [DateTime]::Now)
+    }
+    static [byte[]] GetBytes([securestring]$password, [datetime]$date) {
+        $filetime = $date.ToFileTime()
+        Write-Verbose "FileTime: $filetime"
+        $HmacSHA1 = [Security.Cryptography.HMACSHA1]::new([XConvert]::FromBase32String([XConvert]::Tostring($password)))
         $hmacSize = 20
-        $hash = $HmacSHA1.ComputeHash($TimeBytes)
+        # Integer has only 4 bytes so the first four are zeros
+        [byte[]]$timeBytes = @(0, 0, 0, 0, [byte](([int][TPass]::Seconds -shr 24) -band 255), [byte](([int][TPass]::Seconds -shr 16) -band 255), [byte](([int][TPass]::Seconds -shr  8) -band 255), [byte]( [int][TPass]::Seconds -band 255))
+        $shaBytes = $HmacSHA1.ComputeHash($TimeBytes)
         # Generate HOTP bytes:
-        if ($divider -gt 0) {
-            if ($this.Position -le 0 -or  $this.Position -ge ($hmacSize - 4)) {
-                $this.Position = $hash[$hmacSize- 1] -band 15
+        if ([TPass]::divider -gt 0) {
+            if ([TPass]::Position -le 0 -or  [TPass]::Position -ge ($hmacSize - 4)) {
+                [TPass]::Position = $shaBytes[$hmacSize- 1] -band 15
             }
-            # From the hash
-            $retVal = ($hash[$this.Position] -band 127) -shl 24
-            $retVal = $retVal -bor ($hash[$this.Position + 1] -band 255) -shl 16
-            $retVal = $retVal -bor ($hash[$this.Position + 2] -band 255) -shl  8
-            $retVal = $retVal -bor ($hash[$this.Position + 3] -band 255)
-            $retVal = $retVal % $divider
-            $this.bytes = [xconvert]::FromBase32String($retVal)
-        } else {
-            $this.bytes = $hash
+            $retVal = ($shaBytes[[TPass]::Position] -band 127) -shl 24
+            $retVal = $retVal -bor ($shaBytes[[TPass]::Position + 1] -band 255) -shl 16
+            $retVal = $retVal -bor ($shaBytes[[TPass]::Position + 2] -band 255) -shl  8
+            $retVal = $retVal -bor ($shaBytes[[TPass]::Position + 3] -band 255)
+            $retVal = $retVal % [TPass]::divider
+            $shaBytes = [xconvert]::FromBase32String($retVal)
         }
+        return [shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes($filetime), $shaBytes, $password)
     }
     [bool] IsValid() {
-        # checks if the tOTP is still valid
+        return [TPass]::Validate($this.ToString())
+    }
+    static [bool] Validate([string]$tpassHex, [securestring]$password) {
+        # Parse TOTP string to byte array
+        # $tpassBytes = [XConvert]::BytesFromHex($tpassHex)
+        # $secrBytes = $null
+
+        # $totpBytes = [xconvert]::BytesFromHex($tOtpndSecret[0])
+
+        # Calculate current TOTP value
+        # $Time = [int]([datetime]::Now - (Get-Date).ToUniversalTime()).TotalSeconds
+        # $totp = [TPass]::new($tOtstr)
+        # $currentTotpBytes = $totp.bytes
+
+        # # Compare calculated TOTP with provided TOTP string
+        # if ($currentTotpBytes.Length -eq $totpBytes.Length) {
+        #     for ($i = 0; $i -lt $currentTotpBytes.Length; $i++) {
+        #         if ($currentTotpBytes[$i] -ne $totpBytes[$i]) {
+        #             return $false
+        #         }
+        #     }
+        #     return $true
+        # } else {
+        #     return $false
+        # }
         return $false
     }
     [string] ToString() {
@@ -3503,27 +3539,23 @@ Class BitwUtil {
 #     By using an int[] of indices as a lookup table to rearrange the $nonce and $bytes.
 #     The int[] array is derrivated from the password that the user provides.
 # .EXAMPLE
-#     $_bytes = Bytes_From_Object('** _H4ck_z3_W0rld_ **')
+#     $_bytes = [System.text.Encoding]::UTF8.GetBytes('** _H4ck_z3_W0rld_ **');
 #     $Nonce1 = [CryptoBase]::GetRandomEntropy();
 #     $Nonce2 = [CryptoBase]::GetRandomEntropy();
-#     $Passwd = 'OKay_&~rVJ+T?NpJ(8TqL'; # as long as your functions have this, they are the only ones who will know how to reconstruct back to the original data
+#     $Passwd = [xconvert]::ToSecurestring('OKay_&~rVJ+T?NpJ(8TqL');
 #     $shuffld = [Shuffl3r]::Combine([Shuffl3r]::Combine($_bytes, $Nonce2, $Passwd), $Nonce1, $Passwd);
 #     ($b,$n1) = [Shuffl3r]::Split($shuffld, $Passwd, $Nonce1.Length);
 #     ($b,$n2) = [Shuffl3r]::Split($b, $Passwd, $Nonce2.Length);
-#     echo (Bytes_To_Object($b)) # should be: ** _H4ck_z3_W0rld_ **
-#
-#     $enc = [rc4]::Encrypt($dat, (Read-Host -AsSecureString -Prompt 'Password'))
-#     $dec = [rc4]::Decrypt($enc, (Read-Host -AsSecureString -Prompt 'Password'))
-# .NOTES
-#     Input bytes.length has to be 1 byte greater or more than 16. ie: since the common $nonce length is 16; It means $minLength = 17
+#     [System.text.Encoding]::UTF8.GetString($b) -eq '** _H4ck_z3_W0rld_ **' # should be $true
 class Shuffl3r {
     static [Byte[]] Combine([Byte[]]$Bytes, [Byte[]]$Nonce, [securestring]$Passwod) {
         return [Shuffl3r]::Combine($bytes, $Nonce, [xconvert]::ToString($Passwod))
     }
     static [Byte[]] Combine([Byte[]]$Bytes, [Byte[]]$Nonce, [string]$Passw0d) {
+        # if ($Bytes.Length -lt 16) { throw [InvalidArgumentException]::New('Bytes', 'Input bytes.length should be > 16. ie: $minLength = 17, since the common $nonce length is 16') }
         if ($bytes.Length -lt ($Nonce.Length + 1)) {
             Write-Debug "Bytes.Length = $($Bytes.Length) but Nonce.Length = $($Nonce.Length)" -Debug
-            throw [System.ArgumentOutOfRangeException]::new("Nonce", 'Make sure $Bytes.length >= $Nonce.Length')
+            throw [System.ArgumentOutOfRangeException]::new("Nonce", 'Make sure $Bytes.length > $Nonce.Length')
         }
         if ([string]::IsNullOrWhiteSpace($Passw0d)) { throw [System.ArgumentNullException]::new('$Passw0d') }
         [int[]]$Indices = [int[]]::new($Nonce.Length);
