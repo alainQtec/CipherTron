@@ -746,14 +746,9 @@ class XConvert : System.ComponentModel.TypeConverter {
         }
         return [convert]::ToBoolean($Text)
     }
-    static [psobject] StringToCaesarCipher([string]$Text) {
-        return [PsObject][XConvert]::StringToCaesarCipher($Text, $(Get-Random (1..25)))
-    }
-    static [psobject] StringToCaesarCipher([string]$Text, [int]$Key) {
-        $Text = $Text.ToLower();
-        $Cipher = [string]::Empty;
-        $alphabet = [string]"abcdefghijklmnopqrstuvwxyz";
-        New-Variable -Name alphabet -Value $alphabet -Option Constant -Force;
+    static [string] ToCaesarCipher([string]$Text, [int]$Key) {
+        [ValidateNotNullOrEmpty()][string]$Text = $Text; $Cipher = [string]::Empty;
+        $alphabet = $null; New-Variable -Name alphabet -Option Constant -Value "abcdefghijklmnopqrstuvwxyz" -Force;
         for ($i = 0; $i -lt $Text.Length; $i++) {
             if ($Text[$i] -eq " ") {
                 $Cipher += " ";
@@ -765,17 +760,11 @@ class XConvert : System.ComponentModel.TypeConverter {
                 $Cipher += $alphabet[$index];
             }
         }
-        $Output = [PsObject]::new()
-        $Output | Add-Member -Name 'Cipher' -Value $Cipher -Type NoteProperty
-        $Output | Add-Member -Name 'key' -Value $Key -Type NoteProperty
-        return $Output
+        return $Cipher
     }
-    static [string] StringFromCaesarCipher([string]$Cipher, [int]$Key) {
-        $Cipher = $Cipher.ToLower();
-        $Key = $Key.ToLower();
-        $Output = [string]::Empty;
-        $alphabet = [string]"abcdefghijklmnopqrstuvwxyz";
-        New-Variable -Name alphabet -Value $alphabet -Option Constant -Force;
+    static [string] FromCaesarCipher([string]$Cipher, [int]$Key) {
+        [ValidateNotNullOrEmpty()][string]$Cipher = $Cipher.ToLower(); $Output = [string]::Empty;
+        $alphabet = $null; New-Variable -Name alphabet -Value "abcdefghijklmnopqrstuvwxyz" -Option Constant -Force;
         for ($i = 0; $i -lt $Cipher.Length; $i++) {
             if ($Cipher[$i] -eq " ") {
                 $Output += " ";
@@ -785,14 +774,9 @@ class XConvert : System.ComponentModel.TypeConverter {
         };
         return $Output;
     }
-    static [psobject] StringToPolybiusCipher([String]$Text) {
-        $Ciphrkey = Get-Random "abcdefghijklmnopqrstuvwxyz" -Count 25
-        return [PsObject][XConvert]::StringToPolybiusCipher($Text, $Ciphrkey)
-    }
-    static [psobject] StringToPolybiusCipher([string]$Text, [string]$Key) {
-        $Text = $Text.ToLower();
-        $Key = $Key.ToLower();
-        [String]$Cipher = [string]::Empty
+    static [string] ToPolybiusCipher([string]$Text, [string]$Key) {
+        [ValidateNotNullOrEmpty()][string]$Text = $Text.ToLower();
+        [ValidateNotNullOrEmpty()][string]$Key = $Key.ToLower(); $Cipher = [string]::Empty
         [XConvert]::ValidatePolybiusCipher($Text, $Key, "Encrypt")
         [Array]$polybiusTable = New-Object 'string[,]' 5, 5;
         $letter = 0;
@@ -812,15 +796,11 @@ class XConvert : System.ComponentModel.TypeConverter {
                 }
             }
         }
-        $Output = [PsObject]::new()
-        $Output | Add-Member -Name 'Cipher' -Value $Cipher -Type NoteProperty
-        $Output | Add-Member -Name 'key' -Value $Key -Type NoteProperty
-        return $Output
+        return $Cipher
     }
-    static [string] StringFromPolybiusCipher([string]$Cipher, [string]$Key) {
-        $Cipher = $Cipher.ToLower();
-        $Key = $Key.ToLower();
-        [String]$Output = [string]::Empty
+    static [string] FromPolybiusCipher([string]$Cipher, [string]$Key) {
+        [ValidateNotNullOrEmpty()][string]$Cipher = $Cipher.ToLower();
+        [ValidateNotNullOrEmpty()][string]$Key = $Key.ToLower(); $Output = [string]::Empty
         [XConvert]::ValidatePolybiusCipher($Cipher, $Key, "Decrypt")
         [Array]$polybiusTable = New-Object 'string[,]' 5, 5;
         $letter = 0;
@@ -872,27 +852,6 @@ class XConvert : System.ComponentModel.TypeConverter {
         $az = [int[]](97..122) | ForEach-Object { [string][char]$_ };
         $by = [byte[]][string]::Concat($(($rnString.ToCharArray() | ForEach-Object { if ($_ -in $az) { [string][char]32 } else { [string]$_ } }) | ForEach-Object { $_ })).Trim().split([string][char]32);
         return $by
-    }
-    static [string] StringToCustomCipher([string]$Text) {
-        # Todo: fix this damn method so it produces shorter output!
-        ($e, $p, $q) = [System.Collections.Generic.List[BiGint]]@(17, 53, 61)
-        $_res = @(); $Int32Arr = $text.ToCharArray() | ForEach-Object { if ([string]::IsNullOrEmpty([string]$_)) { [int]32 }else { [int]$_ } } # ie: Since [char]32 -eq " " # So we'r just filling spaces.
-        $M = [System.Numerics.BigInteger]::Multiply($p, $q)
-        foreach ($Item in $Int32Arr) {
-            $_res += [System.Numerics.BigInteger]::ModPow($Item, $e, $M);
-        }
-        [string]$cipher = [xconvert]::ToCompressed([string]::Join(' ', $_res));
-        return $cipher
-    }
-    static [string] StringFromCustomCipher([string]$cipher) {
-        $Text = [string]::Empty; ($e, $p, $q) = [System.Collections.Generic.List[BiGint]]@(17, 53, 61)
-        $09strr = ('0', '1', '2', '3', '4', '5', '6', '7', '8', '9');
-        $_crr = [xconvert]::ToDecompressed($cipher).Split(' ')
-        $_Arr = foreach ($code in $_crr) { [string]::Join('', ($code.ToCharArray() | Where-Object { [string]$_ -in $09strr })) };
-        $_Mod = [System.Numerics.BigInteger]::Multiply($p, $q)
-        $2753 = [BigInt]2753; # The Magic Number $2753 Came from:# {$Code_Phi = [System.Numerics.BigInteger]::Multiply([System.Numerics.BigInteger]::Subtract($p, 1), [System.Numerics.BigInteger]::Subtract($q, 1)); $t = $nt = $r = $nr = New-Object System.Numerics.BigInteger; $t = [System.Numerics.BigInteger]0; $nt = [System.Numerics.BigInteger]1; $r = [System.Numerics.BigInteger]$Code_Phi; $nr = [System.Numerics.BigInteger]$e; while ($nr -ne [System.Numerics.BigInteger]0) { $q = [System.Numerics.BigInteger]::Divide($r, $nr); $tmp = $nt; $nt = [System.Numerics.BigInteger]::Subtract($t, [System.Numerics.BigInteger]::Multiply($q, $nt)); $t = $tmp; $tmp = $nr; $nr = [System.Numerics.BigInteger]::Subtract($r, [System.Numerics.BigInteger]::Multiply($q, $nr)); $r = $tmp }; if ($r -gt 1) { return -1 }; if ($t -lt 0) { $t = [System.Numerics.BigInteger]::Add($t, $Code_Phi) }}
-        $Text = [string]::Join('', $($(foreach ($Item in $_Arr) { [System.Numerics.BigInteger]::ModPow($Item, $2753, $_Mod) }) | ForEach-Object { [char][int]$_ }))
-        return $Text
     }
     [PSCustomObject[]] static ToPSObject([xml]$XML) {
         $Out = @(); foreach ($Object in @($XML.Objects.Object)) {
@@ -2079,9 +2038,9 @@ class TokenProvider {
         return [TokenProvider]::GenerateToken($secretKey, ($expires - [datetime]::Now).TotalSeconds)
     }
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [int]$seconds) {
-        $_mdhsbytes = [TokenProvider]::new($secretKey, $salt).GetBytes()
-        $_secretKey = [cryptoBase]::GetKey([XConvert]::ToSecurestring([Base85]::Encode($_mdhsbytes)))
-        return [System.Convert]::ToBase64String([shuffl3r]::Combine($_mdhsbytes, [System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_secretKey))
+        $_mdhsbytes = [TokenProvider]::new($secretKey, $salt).GetBytes(4)
+        $_secretKey = [cryptoBase]::GetKey([XConvert]::ToSecurestring([xconvert]::BytesToHex($_mdhsbytes)))
+        return [System.Convert]::ToBase64String([shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_mdhsbytes, $_secretKey))
     }
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [timespan]$expires) {
         if ($expires.TotalSeconds -gt [int]::MaxValue) {
@@ -2093,9 +2052,9 @@ class TokenProvider {
         return [TokenProvider]::VerifyToken($b64Token, $secretKey, [CryptoBase]::GetDerivedSalt($secretKey))
     }
     static [bool] VerifyToken([string]$b64Token, [securestring]$secretKey, [byte[]]$salt) {
-        $_calcdhash = [TokenProvider]::new($secretKey, $salt).GetBytes()
-        $_secretKey = [cryptoBase]::GetKey([XConvert]::ToSecurestring([Base85]::Encode($_calcdhash)))
-        ($mdh, $fb) = [shuffl3r]::Split([System.Convert]::FromBase64String($b64Token), $_secretKey, 18)
+        $_calcdhash = [TokenProvider]::new($secretKey, $salt).GetBytes(4)
+        $_secretKey = [cryptoBase]::GetKey([XConvert]::ToSecurestring([xconvert]::BytesToHex($_calcdhash)))
+        ($fb, $mdh) = [shuffl3r]::Split([System.Convert]::FromBase64String($b64Token), $_secretKey, 4)
         $ht = [DateTime]::FromFileTime([long]::Parse([System.Text.Encoding]::UTF8.GetString($fb)))
         $rs = ($ht - [Datetime]::Now).TotalSeconds
         $NotExpired = $rs -ge 0
@@ -2215,7 +2174,7 @@ class CredManaged {
         foreach ($n in $_Props_) {
             $OBJ = $this.$n
             if ($n.Equals('Password')) {
-                $this.$n = [xconvert]::ToSecurestring([xconvert]::StringToCustomCipher([xconvert]::ToProtected([xconvert]::Tostring($OBJ), $_scope_)))
+                $this.$n = [xconvert]::ToSecurestring([Base85]::Encode([xconvert]::ToProtected([xconvert]::Tostring($OBJ), $_scope_)))
             } else {
                 $this.$n = [xconvert]::ToProtected($OBJ, $_scope_)
             }
@@ -2232,7 +2191,7 @@ class CredManaged {
         foreach ($n in $_Props_) {
             $OBJ = $this.$n
             if ($n.Equals('Password')) {
-                $this.$n = [xconvert]::ToSecurestring([xconvert]::ToUnProtected([xconvert]::StringFromCustomCipher([xconvert]::Tostring($OBJ)), $_scope_));
+                $this.$n = [xconvert]::ToSecurestring([xconvert]::ToUnProtected([encodingBase]::GetString([Base85]::Decode([xconvert]::Tostring($OBJ))), $_scope_));
             } else {
                 $this.$n = [xconvert]::ToUnProtected($OBJ, $_scope_);
             }
