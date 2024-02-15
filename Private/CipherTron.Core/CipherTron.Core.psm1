@@ -25,8 +25,10 @@ using namespace System.Runtime.InteropServices
 #     $bot.Chat()
 #Requires -Version 5.1
 
-# Load Microsoft.PowerShell.Utility.dll:
-[void][System.Reflection.Assembly]::Load([System.IO.File]::ReadAllBytes((Get-Command Trace-Command).dll))
+# Load all necessary dlls:
+$script:RuntimeDir = [Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory(); @(
+    'Microsoft.PowerShell.Commands.Utility'
+).ForEach({ [void][System.Reflection.Assembly]::LoadFile([System.IO.Path]::Combine($RuntimeDir, "$_.dll")) })
 # Load localizedData:
 $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Location), 'en-US', 'CipherTron.strings.psd1'))
 if ($dataFile.Exists) {
