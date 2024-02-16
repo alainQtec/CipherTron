@@ -1887,8 +1887,8 @@ class PasswordManager {
         if ($Uppercases.Count -ge 5) { $strength += 10 };
         return $strength;
     }
-    # Method to save the password to sql database
-    static [void] SavePasswordHash([string]$username, [SecureString]$password, [string]$connectionString) {
+    # Method to save the password token (like a custom hash thing) to sql database
+    static [void] SavePasswordToken([string]$username, [SecureString]$password, [string]$connectionString) {
         $passw0rdHash = [string]::Empty
         # Hash the password using the SHA-3 algorithm
         if ('System.Security.Cryptography.SHA3Managed' -is 'type') {
@@ -1917,7 +1917,7 @@ class PasswordManager {
     # $manager = [PasswordManager]::new("username", "")
     # Load the password hash from the database
     # $manager.LoadPasswordHash("username", "Server=localhost;Database=MyDatabase;Trusted_Connection=True;")
-    static [string] LoadPasswordHash([string]$username, [string]$connectionString) {
+    static [string] LoadPasswordToken([string]$username, [string]$connectionString) {
         # Connect to the database
         $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
         $connection.Open()
@@ -1935,59 +1935,35 @@ class PasswordManager {
         $connection.Close()
         return $Passw0rdHash
     }
-    static [string] GetPasswordHash([string]$Passw0rd) {
-        return [xconvert]::ToHexString([TokenProvider]::GetToken([xconvert]::ToSecurestring($Passw0rd)))
-    }
-    static [securestring] Resolve([securestring]$Password, [string]$HashSTR) {
-        return [PasswordManager]::Resolve($Password, $HashSTR, [CryptoBase]::GetDerivedSalt($Password))
-    }
-    static [securestring] Resolve([securestring]$Password, [string]$HashSTR, [byte[]]$salt) {
-        # A HKDF which also verifies its hash Ref: https://asecuritysite.com/powershell/enc07
-        # ie: If this was a Powershell function it would be named Get-DerivedPassword
-        $derivedKey = [securestring]::new(); [System.IntPtr]$handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
-        Add-Type -AssemblyName System.Runtime.InteropServices
-        Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToString($Password));
-        Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
-        [ValidateNotNullOrEmpty()][string] $HashSTR = $HashSTR
-        [ValidateNotNullOrEmpty()][string] $Passw0rd = $Passw0rd
-        if ([TokenProvider]::VerifyHash([xconvert]::FromHexString($HashSTR), $Password, $salt)) {
-            try {
-                if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With Hash: $hashSTR") }
-                $derivedKey = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($Passw0rd, $salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)));
-            } catch {
-                Write-Error ($error[1].exception.ErrorRecord)
-                throw $_
-            } finally {
-                # Zero out the memory used by the variable.
-                [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
-            }
-            return $derivedKey
-        } else {
-            Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
-        }
-    }
 }
 
 
 # .SYNOPSIS
-#     A custom token generator and validatot using PBKDF2 algorithm (kind of).
+#     A custom HMAC Key Derivation class (System.Security.Cryptography.HKDF) using PBKDF2 algorithm.
 # .DESCRIPTION
-#     Used for token generator, validatot, password hashing and stuff.
-#     when a user inputs a password, instead of storing the password in cleartext, we hash the password and store the username and hash pair in the database table.
-#     When the user logs in, we hash the password sent and compare it to the hash connected with the provided username.
+#     Here's a basic scenario of why I use this:
+#     IRL when a user inputs a password, instead of storing the password in cleartext, we hash the password and store the username and hash pair in the database table.
+#     When the user logs in, we hash the input password and compare the calculated hash with what we have in the database.
+#     Cool and that's what this class does but also checks if the password has expired or not.
+#
+#     The token basically stores expiration date and hash of the Password.
+#     but the token is encryptd /jumbled and can only be read if the InputPassword's hash matches the CalculatedHash.
+#
+#     This class can also be used to check the validity of the input password before deriving it.
 # .EXAMPLE
 #
 #     The main use is to never store the actual input password, rather keep its hash
 #     # STEP 1. Create Hash and Store it somewhere secure.
-#     $hashSTR = [xconvert]::ToHexString([TokenProvider]::GetToken([xconvert]::ToSecurestring("My_passw0rdSTR@123")))
+#     $hashSTR = [xconvert]::ToHexString([HKDF2]::GetToken([xconvert]::ToSecurestring("My_passw0rdSTR@123")))
 #     $hashSTR | Out-File ReallySecureFilePath; # keep the hash string it in a file Or in a database
 #
 #     # STEP 2. Use the Hash to verify if $InputPassword is legit, then login/orNot
 #     $InputPassword = "My_passw0rdSTR@123"
-#     $IsValidPasswd = [TokenProvider]::VerifyToken([xconvert]::FromHexString((cat ReallySecureFilePath)), [xconvert]::ToSecurestring($InputPassword))
+#     $IsValidPasswd = [HKDF2]::VerifyToken([xconvert]::FromHexString((cat ReallySecureFilePath)), [xconvert]::ToSecurestring($InputPassword))
 # .NOTES
-#     Inspired by https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
-class TokenProvider {
+#     Inspired by: - https://asecuritysite.com/powershell/enc07
+#                  - https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
+class HKDF2 {
     [byte[]] $Salt
     [int] $IterationCount
     [int] $BlockSize
@@ -1997,17 +1973,17 @@ class TokenProvider {
     [int] $BufferEndIndex
     [System.Security.Cryptography.HMAC] $Algorithm
 
-    TokenProvider() {}
-    TokenProvider([byte[]]$bytes) {
-        $ob = [TokenProvider]::Create($bytes)
+    HKDF2() {}
+    HKDF2([byte[]]$bytes) {
+        $ob = [HKDF2]::Create($bytes)
         $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
     }
-    TokenProvider([securestring]$secretKey) {
-        $ob = [TokenProvider]::Create($secretKey)
+    HKDF2([securestring]$secretKey) {
+        $ob = [HKDF2]::Create($secretKey)
         $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
     }
-    TokenProvider([securestring]$secretKey, [byte[]]$salt) {
-        $ob = [TokenProvider]::Create($secretKey, $salt)
+    HKDF2([securestring]$secretKey, [byte[]]$salt) {
+        $ob = [HKDF2]::Create($secretKey, $salt)
         $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
     }
     [byte[]] GetBytes() {
@@ -2069,26 +2045,26 @@ class TokenProvider {
             return $bytes
         }
     }
-    static [TokenProvider] Create([byte[]]$bytes) {
+    static [HKDF2] Create([byte[]]$bytes) {
         $dsalt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
-        return [TokenProvider]::Create($bytes, $dsalt)
+        return [HKDF2]::Create($bytes, $dsalt)
     }
-    static [TokenProvider] Create([securestring]$secretKey) {
+    static [HKDF2] Create([securestring]$secretKey) {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($secretKey))
         $dsalt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
-        return [TokenProvider]::Create($bytes, $dsalt)
+        return [HKDF2]::Create($bytes, $dsalt)
     }
-    static [TokenProvider] Create([byte[]]$secretKey, [byte[]]$salt) {
-        return [TokenProvider]::Create([byte[]]$secretKey, [System.Security.Cryptography.HMACSHA256]::new(), [byte[]]$salt, 10000)
+    static [HKDF2] Create([byte[]]$secretKey, [byte[]]$salt) {
+        return [HKDF2]::Create([byte[]]$secretKey, [System.Security.Cryptography.HMACSHA256]::new(), [byte[]]$salt, 10000)
     }
-    static [TokenProvider] Create([securestring]$secretKey, [byte[]]$salt) {
-        return [TokenProvider]::Create([System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($secretKey)), $salt)
+    static [HKDF2] Create([securestring]$secretKey, [byte[]]$salt) {
+        return [HKDF2]::Create([System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($secretKey)), $salt)
     }
-    static [TokenProvider] Create([byte[]]$secretKey, [System.Security.Cryptography.HMAC]$algorithm, [byte[]]$salt, [int]$iterations) {
+    static [HKDF2] Create([byte[]]$secretKey, [System.Security.Cryptography.HMAC]$algorithm, [byte[]]$salt, [int]$iterations) {
         if (!$algorithm) { throw "Algorithm cannot be null." }
         if (!$salt) { throw "Salt cannot be null." }
         if (!$secretKey) { throw "secretKey cannot be null." }
-        $ob = [TokenProvider]::new()
+        $ob = [HKDF2]::new()
         $ob.Algorithm = $algorithm
         $ob.Algorithm.Key = $secretKey
         $ob.Salt = $salt
@@ -2097,23 +2073,26 @@ class TokenProvider {
         $ob.BufferBytes = [byte[]]::new($ob.BlockSize)
         return $ob
     }
+    static [string] GetToken([string]$secretKey) {
+        return [HKDF2]::GetToken([xconvert]::ToSecurestring($secretKey))
+    }
     static [string] GetToken([securestring]$secretKey) {
-        return [TokenProvider]::GetToken($secretKey, [cryptobase]::GetDerivedSalt($secretKey))
+        return [HKDF2]::GetToken($secretKey, [cryptobase]::GetDerivedSalt($secretKey))
     }
     static [string] GetToken([securestring]$secretKey, [int]$seconds) {
-        return [TokenProvider]::GetToken($secretKey, [CryptoBase]::GetDerivedSalt($secretKey), $seconds)
+        return [HKDF2]::GetToken($secretKey, [CryptoBase]::GetDerivedSalt($secretKey), $seconds)
     }
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt) {
-        return [TokenProvider]::GetToken($secretKey, $salt, [timespan]::new(365*68, 0, 0, 0))
+        return [HKDF2]::GetToken($secretKey, $salt, [timespan]::new(365*68, 0, 0, 0))
     }
     static [string] GetToken([securestring]$secretKey, [timespan]$expires) {
-        return [TokenProvider]::GetToken($secretKey, [CryptoBase]::GetDerivedSalt($secretKey), $expires.TotalSeconds)
+        return [HKDF2]::GetToken($secretKey, [CryptoBase]::GetDerivedSalt($secretKey), $expires.TotalSeconds)
     }
     static [string] GetToken([securestring]$secretKey, [datetime]$expires) {
-        return [TokenProvider]::GenerateToken($secretKey, ($expires - [datetime]::Now).TotalSeconds)
+        return [HKDF2]::GenerateToken($secretKey, ($expires - [datetime]::Now).TotalSeconds)
     }
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [int]$seconds) {
-        $_mdhsbytes = [TokenProvider]::new($secretKey, $salt).GetBytes(4)
+        $_mdhsbytes = [HKDF2]::new($secretKey, $salt).GetBytes(4)
         $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_mdhsbytes)))
         return [xconvert]::ToBase32String([shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_mdhsbytes, $_secretKey)).Replace("_", '')
     }
@@ -2121,20 +2100,47 @@ class TokenProvider {
         if ($expires.TotalSeconds -gt [int]::MaxValue) {
             Throw [InvalidArgumentException]::new('Expires', "Token max timespan is $([Math]::Floor([timespan]::new(0, 0, 0, [int]::MaxValue).TotalDays/365)) years.")
         }
-        return [TokenProvider]::GetToken($secretKey, $salt, $expires.TotalSeconds)
+        return [HKDF2]::GetToken($secretKey, $salt, $expires.TotalSeconds)
     }
     static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey) {
-        return [TokenProvider]::VerifyToken($TokenSTR, $secretKey, [CryptoBase]::GetDerivedSalt($secretKey))
+        return [HKDF2]::VerifyToken($TokenSTR, $secretKey, [CryptoBase]::GetDerivedSalt($secretKey))
     }
     static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey, [byte[]]$salt) {
-        $_calcdhash = [TokenProvider]::new($secretKey, $salt).GetBytes(4)
+        $_calcdhash = [HKDF2]::new($secretKey, $salt).GetBytes(4)
         $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_calcdhash)))
         ($fb, $mdh) = [shuffl3r]::Split([xconvert]::FromBase32String(($TokenSTR.Trim() + '_'*4)), $_secretKey, 4)
         $ht = [DateTime]::FromFileTime([long]::Parse([System.Text.Encoding]::UTF8.GetString($fb)))
         $rs = ($ht - [Datetime]::Now).TotalSeconds
         $NotExpired = $rs -ge 0
-        Write-Verbose $("[TokenProvider] The token {0} on: {1}" -f $(if ($NotExpired) { "will expire" } else { "expired" }), [datetime]::Now.AddSeconds($rs))
-        return $NotExpired -and [TokenProvider]::TestEqualByteArrays($_calcdhash, $mdh)
+        Write-Verbose $("[HKDF2] The token {0} on: {1}" -f $(if ($NotExpired) { "will expire" } else { "expired" }), [datetime]::Now.AddSeconds($rs))
+        return $NotExpired -and [HKDF2]::TestEqualByteArrays($_calcdhash, $mdh)
+    }
+    static [securestring] Resolve([securestring]$Password, [string]$TokenSTR) {
+        return [HKDF2]::Resolve($Password, $TokenSTR, [CryptoBase]::GetDerivedSalt($Password))
+    }
+    static [securestring] Resolve([securestring]$Password, [string]$TokenSTR, [byte[]]$salt) {
+        $derivedKey = [securestring]::new(); [System.IntPtr]$handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
+        Add-Type -AssemblyName System.Runtime.InteropServices
+        Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToString($Password));
+        Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
+        [ValidateNotNullOrEmpty()][string] $TokenSTR = $TokenSTR
+        [ValidateNotNullOrEmpty()][string] $Passw0rd = $Passw0rd
+        if ([HKDF2]::VerifyToken($TokenSTR, $Password, $salt)) {
+            try {
+                if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With Hash: $TokenSTR") }
+                $derivedKey = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($Passw0rd, $salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)));
+            } catch {
+                Write-Error ($error[1].exception.ErrorRecord)
+                throw $_
+            } finally {
+                Remove-Variable -Name Passw0rd -Force -ErrorAction Ignore
+                # Zero out the memory used by the variable(just to be safe).
+                [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
+            }
+            return $derivedKey
+        } else {
+            Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
+        }
     }
     static [bool] TestEqualByteArrays([byte[]]$a, [byte[]]$b) {
         # Compares two byte arrays for equality, specifically written so that the loop is not optimized.
@@ -5170,7 +5176,7 @@ class k3y {
     }
     [securestring]hidden ResolvePassword([securestring]$Password) {
         if (!$this.IsHashed()) {
-            $hashSTR = [string]::Empty; Set-Variable -Name hashSTR -Scope local -Visibility Private -Option Private -Value $([string][xconvert]::ToHexString([TokenProvider]::GetToken($password)));
+            $hashSTR = [string]::Empty; Set-Variable -Name hashSTR -Scope local -Visibility Private -Option Private -Value $([string][xconvert]::ToHexString([HKDF2]::GetToken($password)));
             & ([scriptblock]::Create("`$this.User.psobject.Properties.Add([psscriptproperty]::new('Password', { ConvertTo-SecureString -AsPlainText -String '$hashSTR' -Force }))"));
         }
         $SecHash = $this.User.Password;
