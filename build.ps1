@@ -619,7 +619,7 @@ Begin {
     function Write-BuildWarning {
         param(
             [parameter(Mandatory, Position = 0, ValueFromRemainingArguments, ValueFromPipeline)]
-            [System.String]$Message
+            [string]$Message
         )
         Process {
             if ([bool][int]$env:IsCI) {
@@ -632,7 +632,7 @@ Begin {
     function Write-BuildError {
         param(
             [parameter(Mandatory, Position = 0, ValueFromRemainingArguments, ValueFromPipeline)]
-            [System.String]$Message
+            [string]$Message
         )
         Process {
             if ([bool][int]$env:IsCI) {
