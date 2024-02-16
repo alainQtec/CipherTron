@@ -2115,7 +2115,7 @@ class TokenProvider {
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [int]$seconds) {
         $_mdhsbytes = [TokenProvider]::new($secretKey, $salt).GetBytes(4)
         $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_mdhsbytes)))
-        return [xconvert]::ToBase32String([shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_mdhsbytes, $_secretKey))
+        return [xconvert]::ToBase32String([shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_mdhsbytes, $_secretKey)).Replace("_", '')
     }
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [timespan]$expires) {
         if ($expires.TotalSeconds -gt [int]::MaxValue) {
@@ -2129,7 +2129,7 @@ class TokenProvider {
     static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey, [byte[]]$salt) {
         $_calcdhash = [TokenProvider]::new($secretKey, $salt).GetBytes(4)
         $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_calcdhash)))
-        ($fb, $mdh) = [shuffl3r]::Split([xconvert]::FromBase32String($TokenSTR), $_secretKey, 4)
+        ($fb, $mdh) = [shuffl3r]::Split([xconvert]::FromBase32String(($TokenSTR.Trim() + '_'*4)), $_secretKey, 4)
         $ht = [DateTime]::FromFileTime([long]::Parse([System.Text.Encoding]::UTF8.GetString($fb)))
         $rs = ($ht - [Datetime]::Now).TotalSeconds
         $NotExpired = $rs -ge 0
