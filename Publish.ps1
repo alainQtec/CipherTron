@@ -8,4 +8,4 @@
 #     $APIKEY = $Env:NUGETAPIKEY
 # }
 # Publish-Module -Path "$PSScriptRoot\Module" -NuGetApiKey $APIKEY
-& ([IO.Path]::Combine($PSScriptRoot, 'build.ps1')) -Task Deploy -UpdateModules
+& ([IO.Path]::Combine($PSScriptRoot, 'build.ps1')) -Task Deploy
