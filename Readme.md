@@ -38,9 +38,13 @@ Your all in one Cryptography Powershell module.
 </div>
 <br />
 
+[![CI](https://github.com/alainQtec/CipherTron/actions/workflows/CI.yaml/badge.svg)](https://github.com/alainQtec/CipherTron/actions/workflows/CI.yaml)
+[![Upload artifact from Ubuntu](https://github.com/alainQtec/CipherTron/actions/workflows/Upload_Artifact.yaml/badge.svg)](https://github.com/alainQtec/CipherTron/actions/workflows/Upload_Artifact.yaml)
+[![Publish to PowerShell Gallery](https://github.com/alainQtec/CipherTron/actions/workflows/Publish.yaml/badge.svg)](https://github.com/alainQtec/CipherTron/actions/workflows/Publish.yaml)
+
 ## 📖 **Description**
 
-Ciphertron is a personnal Cryptography assistance bot writen written as a PowerShell module. 
+Ciphertron is a personnal Cryptography assistance bot writen written as a PowerShell module.
 
 Cryptography is an important field with a wide range of practical applications, and anyone with an interest in security or computer science can benefit.
 
