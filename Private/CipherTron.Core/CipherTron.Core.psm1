@@ -1543,7 +1543,7 @@ class Base85 : EncodingBase {
 
 
 
-#region    GitHub
+#region     GitHub
 class GitHub {
     static $webSession
     static [user] $user
@@ -1580,7 +1580,7 @@ class GitHub {
             Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -ForegroundColor Green
             [GitHub]::SetToken()
             Write-Host "[GitHub] Good, now let's use the api token :)" -ForegroundColor DarkGreen
-        } elseif ([CipherTron]::IsBase64String([IO.File]::ReadAllText([GitHub]::TokenFile))) {
+        } elseif ([CryptoBase]::IsBase64String([IO.File]::ReadAllText([GitHub]::TokenFile))) {
             Write-Host "[GitHub] Encrypted token found in file: $([GitHub]::TokenFile)" -ForegroundColor DarkGreen
         } else {
             throw [System.Exception]::New("Unable to read token file!")
