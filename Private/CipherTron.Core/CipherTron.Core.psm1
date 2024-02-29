@@ -261,11 +261,18 @@ class NetworkManager {
         return [NetworkManager]::DownloadFile($url, "$(Split-Path $url.AbsolutePath -Leaf)_$randomSuffix");
     }
     static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile) {
+        return [NetworkManager]::DownloadFile($url, $outFile, $false)
+    }
+    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile, [bool]$Force) {
+        [ValidateNotNullOrEmpty()][uri]$url = [uri]$url;
         $outFile = [CryptoBase]::GetUnResolvedPath($outFile);
         if ([System.IO.Directory]::Exists($outFile)) {
-            throw [InvalidArgumentException]::new("outFile", "Please provide valid file path")
+            throw [InvalidArgumentException]::new("outFile", "Please provide valid file path, not a directory.")
         }
-        if ([IO.File]::Exists($outFile)) { Remove-Item $outFile -Force }
+        if ((Test-Path -Path $outFile -PathType Leaf -ErrorAction Ignore)) {
+            if (!$Force) { throw "$outFile already exists" }
+            Remove-Item $outFile -Force -ErrorAction Ignore | Out-Null
+        }
         $stream = $null; $fileStream = $null; $name = Split-Path $url -Leaf;
         $request = [System.Net.HttpWebRequest]::Create($url)
         $request.UserAgent = "Mozilla/5.0"
@@ -287,15 +294,13 @@ class NetworkManager {
         try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
         return (Get-Item $outFile)
     }
-
     static [void] UploadFile ([string]$SourcePath, [string]$DestinationURL) {
         Invoke-RestMethod -Uri $DestinationURL -Method Post -InFile $SourcePath
     }
-
     static [bool] TestConnection ([string]$HostName) {
         [ValidateNotNullOrEmpty()][string]$HostName = $HostName
         if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
-        $cs = $null; $cc = [NetworkManager]::caller; $re = @{ true  = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
+        $cs = $null; $cc = [NetworkManager]::caller; $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
         Write-Host "$cc Testing Connection ... " -ForegroundColor Blue -NoNewline
         try {
             [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send($HostName);
@@ -2083,7 +2088,7 @@ class HKDF2 {
         return [HKDF2]::GetToken($secretKey, [CryptoBase]::GetDerivedSalt($secretKey), $seconds)
     }
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt) {
-        return [HKDF2]::GetToken($secretKey, $salt, [timespan]::new(365*68, 0, 0, 0))
+        return [HKDF2]::GetToken($secretKey, $salt, [timespan]::new(365 * 68, 0, 0, 0))
     }
     static [string] GetToken([securestring]$secretKey, [timespan]$expires) {
         return [HKDF2]::GetToken($secretKey, [CryptoBase]::GetDerivedSalt($secretKey), $expires.TotalSeconds)
@@ -2108,7 +2113,7 @@ class HKDF2 {
     static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey, [byte[]]$salt) {
         $_calcdhash = [HKDF2]::new($secretKey, $salt).GetBytes(4)
         $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_calcdhash)))
-        ($fb, $mdh) = [shuffl3r]::Split([xconvert]::FromBase32String(($TokenSTR.Trim() + '_'*4)), $_secretKey, 4)
+        ($fb, $mdh) = [shuffl3r]::Split([xconvert]::FromBase32String(($TokenSTR.Trim() + '_' * 4)), $_secretKey, 4)
         $ht = [DateTime]::FromFileTime([long]::Parse([System.Text.Encoding]::UTF8.GetString($fb)))
         $rs = ($ht - [Datetime]::Now).TotalSeconds
         $NotExpired = $rs -ge 0
@@ -3534,7 +3539,7 @@ class Shuffl3r {
         [int[]]$Indices = [int[]]::new([int]$NonceLength);
         Set-Variable -Name Indices -Scope local -Visibility Private -Option ReadOnly -Value ([Shuffl3r]::GenerateIndices($NonceLength, $Passw0d, ($ShuffledBytes.Length - $NonceLength)));
         $Nonce = [Byte[]]::new($NonceLength);
-        $bytes = [Byte[]]$((0..($ShuffledBytes.Length - 1)) | Where-Object { $_ -NotIn $Indices } | Select-Object *, @{l='bytes'; e= { $ShuffledBytes[$_] } }).bytes
+        $bytes = [Byte[]]$((0..($ShuffledBytes.Length - 1)) | Where-Object { $_ -NotIn $Indices } | Select-Object *, @{l = 'bytes'; e = { $ShuffledBytes[$_] } }).bytes
         for ($i = 0; $i -lt $NonceLength; $i++) { $Nonce[$i] = $ShuffledBytes[$Indices[$i]] };
         return ($bytes, $Nonce)
     }
@@ -5913,7 +5918,7 @@ $prompt
         if ($null -eq [CipherTron]::Tmp) { [CipherTron]::Tmp = [chatTmp]::new() }
         if ($null -eq $this.Config) { $this.SetConfigs() }
         [CipherTron]::Tmp.vars.Set(@{
-                Query             =  ''
+                Query             = ''
                 Users             = @{}
                 Host_Os           = [CipherTron]::Get_Host_Os()
                 Response          = ''
@@ -6152,7 +6157,7 @@ $prompt
             [void][CipherTron]::banners.Add([base85]::Decode([xconvert]::ToDeCompressed('H4sIAAAAAAAAA41UTW+DMAy9I+VHIKrCpB526aH70Na12mWTKFvVbWpXJqAtGaxFHfv/SyABJyTA0bGfYz8/Gx9GfuRNH93o+c/1V/gwmq+pGXr725ujaO4qEwQjw7O3T2c3na/90s/NuAe68JIUWr+Uu4mm5iZChjY7b6SrTVJFla4Mf5hd/rBwC1/XmAW+/8XkbRUICJ4ihFzMJkfXu3B3Si5sx04lppChRtPPhrn5/fo1Pidtua9MygULT3j5wb5A0/Bz/0a0fsiklWCBqbexzEVc0ukMPnOpAP1kaXPIAN0qZqdG83oKr0YXNDvNnTcH/RFW6FjSBfybUJObYimxILLNFg51gadmUCta4kqXIuqnC+cus9o1J3AB/APnVHPVqthygwgXrVx1q4Y1oueKeN+z5lApU1aeFm/I6B4G7wZsGBu0yEVzA1uvDdheevjU6LiHqlq54I320Fyx7GJ4qSqwcNL5yEsEMzOb3wsuI5ErOgzJK6ALL+GCnxfxM+bXoMH+pch4CSfLk6hJdTg8JLBNcPgUjcpoKv/hP5EAUEL/BgAA')));
             #You can create more using: https://github.com/LachlanArthur/Braille-ASCII-Art
         }
-        $bn = [CipherTron]::banners[(Get-Random (0..($bc-1)))]
+        $bn = [CipherTron]::banners[(Get-Random (0..($bc - 1)))]
         [System.Text.Encoding]::UTF8.GetString($bn) | Write-Host -ForegroundColor Green
         [void][cli]::Write("            Making Cryptography Easy and Fun", [System.ConsoleColor]::Green, $true, $false)
         [void][System.Console]::WriteLine()
