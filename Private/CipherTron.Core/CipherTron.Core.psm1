@@ -230,6 +230,77 @@ class cPsObject : PsObject {
         )
     }
 }
+
+# .SYNOPSIS
+# A simple progress utility class
+# .EXAMPLE
+# $OgForeground = (Get-Variable host).Value.UI.RawUI.ForegroundColor
+# (Get-Variable host).Value.UI.RawUI.ForegroundColor = [ConsoleColor]::Green
+# for ($i = 0; $i -le 100; $i++) {
+#     [ProgressUtil]::WriteProgressBar($i)
+#     [System.Threading.Thread]::Sleep(50)
+# }
+# (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
+# [progressUtil]::WaitJob("waiting", { Start-Sleep -Seconds 3 })
+class ProgressUtil {
+    static hidden [string] $_block = '■';
+    static hidden [string] $_back = "`b";
+    static hidden [string[]] $_twirl = @(
+        "+■0", "-\\|/", "|/-\\"
+    );
+    static [int] $_twirlIndex = 0
+    static hidden [string]$frames
+    static [void] WriteProgressBar([int]$percent) {
+        [ProgressUtil]::WriteProgressBar($percent, $true)
+    }
+    static [void] WriteProgressBar([int]$percent, [bool]$update) {
+        $PBLength = [int]([Console]::WindowWidth * 0.7)
+        [ProgressUtil]::_back = "`b" * [Console]::WindowWidth
+        if ($update) { [Console]::Write([ProgressUtil]::_back) }
+        [Console]::Write("["); $p = [int](($percent / 100.0) * $PBLength + 0.5)
+        for ($i = 0; $i -lt $PBLength; $i++) {
+            if ($i -ge $p) {
+                [Console]::Write(' ');
+            } else {
+                [Console]::Write([ProgressUtil]::_block);
+            }
+        }
+        [Console]::Write("] {0,3:##0}%", $percent);
+    }
+    static [System.Management.Automation.Job] WaitJob([string]$progressMsg, [scriptblock]$Job) {
+        return [ProgressUtil]::WaitJob($progressMsg, $(Start-Job -ScriptBlock $Job))
+    }
+    static [System.Management.Automation.Job] WaitJob([string]$progressMsg, [System.Management.Automation.Job]$Job) {
+        [Console]::CursorVisible = $false;
+        [ProgressUtil]::frames = [ProgressUtil]::_twirl[0]
+        [int]$length = [ProgressUtil]::frames.Length;
+        $originalY = [Console]::CursorTop
+        while ($Job.JobStateInfo.State -notin ('Completed', 'failed')) {
+            for ($i = 0; $i -lt $length; $i++) {
+                [ProgressUtil]::frames.Foreach({ [Console]::Write("$progressMsg $($_[$i])") })
+                [System.Threading.Thread]::Sleep(50)
+                [Console]::Write(("`b" * ($length + $progressMsg.Length)))
+                [Console]::CursorTop = $originalY
+            }
+        }
+        Write-Host "`b$progressMsg ... " -NoNewline -ForegroundColor Magenta
+        [System.Management.Automation.Runspaces.RemotingErrorRecord[]]$Errors = $Job.ChildJobs.Where({
+                $null -ne $_.Error
+            }
+        ).Error;
+        if ($Job.JobStateInfo.State -eq "Failed" -or $Errors.Count -gt 0) {
+            $errormessages = [string]::Empty
+            if ($null -ne $Errors) {
+                $errormessages = $Errors.Exception.Message -join "`n"
+            }
+            Write-Host "Completed with errors.`n`t$errormessages" -ForegroundColor Red
+        } else {
+            Write-Host "Done." -ForegroundColor Green
+        }
+        [Console]::CursorVisible = $true;
+        return $Job
+    }
+}
 class NetworkManager {
     [string] $HostName
     static [System.Net.IPAddress[]] $IPAddresses
@@ -264,15 +335,6 @@ class NetworkManager {
         return [NetworkManager]::DownloadFile($url, $outFile, $false)
     }
     static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile, [bool]$Force) {
-        [ValidateNotNullOrEmpty()][uri]$url = [uri]$url;
-        $outFile = [CryptoBase]::GetUnResolvedPath($outFile);
-        if ([System.IO.Directory]::Exists($outFile)) {
-            throw [InvalidArgumentException]::new("outFile", "Please provide valid file path, not a directory.")
-        }
-        if ((Test-Path -Path $outFile -PathType Leaf -ErrorAction Ignore)) {
-            if (!$Force) { throw "$outFile already exists" }
-            Remove-Item $outFile -Force -ErrorAction Ignore | Out-Null
-        }
         $stream = $null; $fileStream = $null; $name = Split-Path $url -Leaf;
         $request = [System.Net.HttpWebRequest]::Create($url)
         $request.UserAgent = "Mozilla/5.0"
@@ -280,17 +342,29 @@ class NetworkManager {
         $contentLength = $response.ContentLength
         $stream = $response.GetResponseStream()
         $buffer = New-Object byte[] 1024
-        $fileStream = [System.IO.FileStream]::new($outFile, [System.IO.FileMode]::CreateNew)
+        $outPath = [CryptoBase]::GetUnResolvedPath($outFile)
+        if ([System.IO.Directory]::Exists($outFile)) {
+            if (!$Force) { throw [InvalidArgumentException]::new("outFile", "Please provide valid file path, not a directory.") }
+            $outPath = Join-Path -Path $outFile -ChildPath $name
+        }
+        if ([IO.File]::Exists($outPath)) {
+            if (!$Force) { throw "$outFile already exists" }
+            Remove-Item $outPath -Force -ErrorAction Ignore | Out-Null
+        }
+        $fileStream = [System.IO.FileStream]::new($outPath, [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         $totalBytesReceived = 0
         $totalBytesToReceive = $contentLength
+        $OgForeground = (Get-Variable host).Value.UI.RawUI.ForegroundColor
+        Write-Host "[+] Downloading $name to $Outfile" -ForegroundColor Magenta
+        (Get-Variable host).Value.UI.RawUI.ForegroundColor = [ConsoleColor]::Green
         while ($totalBytesToReceive -gt 0) {
             $bytesRead = $stream.Read($buffer, 0, 1024)
             $totalBytesReceived += $bytesRead
             $totalBytesToReceive -= $bytesRead
             $fileStream.Write($buffer, 0, $bytesRead)
-            $percentComplete = [int]($totalBytesReceived / $contentLength * 100)
-            Write-Progress -Activity "Downloading $name to $Outfile" -Status "Progress: $percentComplete%" -PercentComplete $percentComplete
+            [ProgressUtil]::WriteProgressBar([int]($totalBytesReceived / $contentLength * 100), $true);
         }
+        (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
         try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
         return (Get-Item $outFile)
     }
@@ -594,7 +668,7 @@ class CryptoBase {
     static [IO.DirectoryInfo] Get_dataPath([string]$appName, [string]$SubdirName) {
         $_Host_OS = [CryptoBase]::Get_Host_Os()
         $dataPath = if ($_Host_OS -eq 'Windows') {
-            [System.IO.DirectoryInfo]::new([IO.Path]::Combine($Env:HOME, "AppData", $appName, $SubdirName))
+            [System.IO.DirectoryInfo]::new([IO.Path]::Combine($Env:HOME, "AppData", "Roaming", $appName, $SubdirName))
         } elseif ($_Host_OS -in ('Linux', 'MacOs')) {
             [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
         } elseif ($_Host_OS -eq 'Unknown') {
@@ -697,7 +771,7 @@ class xconvert : System.ComponentModel.TypeConverter {
         }
         return [guid]::new([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($InputText)).Replace("-", "").ToLower().Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-"))
     }
-    [SecureString] static ToSecurestring([string]$String) {
+    static [SecureString] ToSecurestring([string]$String) {
         $SecureString = $null; Set-Variable -Name SecureString -Scope Local -Visibility Private -Option Private -Value ([System.Security.SecureString]::new());
         if (![string]::IsNullOrEmpty($String)) {
             $Chars = $String.toCharArray()
@@ -708,7 +782,7 @@ class xconvert : System.ComponentModel.TypeConverter {
         $SecureString.MakeReadOnly();
         return $SecureString
     }
-    [int[]] static StringToCharCode([string[]]$string) {
+    static [int[]] StringToCharCode([string[]]$string) {
         [bool]$encoderShouldEmitUTF8Identifier = $false; $Codes = @()
         $Encodr = [System.Text.UTF8Encoding]::new($encoderShouldEmitUTF8Identifier)
         for ($i = 0; $i -lt $string.Count; $i++) {
@@ -1546,17 +1620,15 @@ class Base85 : EncodingBase {
 }
 #endregion Base85
 
-
-
 #region     GitHub
 class GitHub {
     static $webSession
-    static [user] $user
+    static [string] $UserName
+    static hidden [bool] $IsInteractive = $false
     static hidden [string] $TokenFile = [GitHub]::GetTokenFile()
-    static hidden [EncryptionScope] $EncryptionScope = [EncryptionScope]::Machine
 
     static [PSObject] createSession() {
-        return [Github]::createSession([Github]::User.Name)
+        return [Github]::createSession([Github]::UserName)
     }
     static [PSObject] createSession([string]$UserName) {
         [GitHub]::SetToken()
@@ -1564,7 +1636,7 @@ class GitHub {
     }
     static [Psobject] createSession([string]$GitHubUserName, [securestring]$clientSecret) {
         [ValidateNotNullOrEmpty()][string]$GitHubUserName = $GitHubUserName
-        [ValidateNotNullOrEmpty()][string]$GithubToken = $GithubToken = [xconvert]::ToString([securestring]$clientSecret)
+        [ValidateNotNullOrEmpty()][string]$GithubToken = $GithubToken = [AesGCM]::GetString([securestring]$clientSecret)
         $encodedAuth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("$($GitHubUserName):$($GithubToken)"))
         $web_session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
         [void]$web_session.Headers.Add('Authorization', "Basic $($encodedAuth)")
@@ -1573,40 +1645,42 @@ class GitHub {
         return $web_session
     }
     static [void] SetToken() {
-        [GitHub]::SetToken([xconvert]::ToString((Read-Host -Prompt "[GitHub] Paste/write your api token" -AsSecureString)), $(Read-Host -Prompt "[GitHub] Paste/write a Password to encrypt the token" -AsSecureString))
+        [GitHub]::SetToken([AesGCM]::GetString((Read-Host -Prompt "[GitHub] Paste/write your api token" -AsSecureString)), $(Read-Host -Prompt "[GitHub] Paste/write a Password to encrypt the token" -AsSecureString))
     }
     static [void] SetToken([string]$token, [securestring]$password) {
         if (![IO.File]::Exists([GitHub]::TokenFile)) { New-Item -Type File -Path ([GitHub]::TokenFile) -Force | Out-Null }
         [IO.File]::WriteAllText([GitHub]::TokenFile, [convert]::ToBase64String([AesGCM]::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
     }
     static [securestring] GetToken() {
-        $sectoken = $null; $_c = [AesGCM]::caller; [AesGCM]::caller = '[GitHub]'
-        if ([string]::IsNullOrWhiteSpace((Get-Content ([GitHub]::TokenFile) -ErrorAction Ignore))) {
-            Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -ForegroundColor Green
-            [GitHub]::SetToken()
-            Write-Host "[GitHub] Good, now let's use the api token :)" -ForegroundColor DarkGreen
-        } elseif ([CryptoBase]::IsBase64String([IO.File]::ReadAllText([GitHub]::TokenFile))) {
-            Write-Host "[GitHub] Encrypted token found in file: $([GitHub]::TokenFile)" -ForegroundColor DarkGreen
-        } else {
-            throw [System.Exception]::New("Unable to read token file!")
-        }
+        $sectoken = $null; $session_pass = [AesGCM]::GetSecureString('123');
         try {
-            $sectoken = [xconvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString(
-                    [AesGCM]::Decrypt(
-                        [Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())),
-                        $(Read-Host -Prompt "[GitHub] Input password to use your token" -AsSecureString)
-                    )
+            if ([GitHub]::IsInteractive) {
+                if ([string]::IsNullOrWhiteSpace((Get-Content ([GitHub]::TokenFile) -ErrorAction Ignore))) {
+                    Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -ForegroundColor Green
+                    [GitHub]::SetToken()
+                    Write-Host "[GitHub] Good, now let's use the api token :)" -ForegroundColor DarkGreen
+                } elseif ([GitHub]::ValidateBase64String([IO.File]::ReadAllText([GitHub]::TokenFile))) {
+                    Write-Host "[GitHub] Encrypted token found in file: $([GitHub]::TokenFile)" -ForegroundColor DarkGreen
+                } else {
+                    throw [System.Exception]::New("Unable to read token file!")
+                }
+                $session_pass = Read-Host -Prompt "[GitHub] Input password to use your token" -AsSecureString
+            } else {
+                #Fix: Temporary Workaround: Thisz a pat from one of my GitHub a/cs.It Can only read/write gists. Will expire on 1/1/2025. DoNot Abuse this or I'll take it down!!
+                $et = "OOLqqov4ugMQAtFcWqbzRwNBD65uf9JOZ+jzx1RtcHAZtnKaq1zkIpBcuv1MQfOkvIr/V066Zgsaq5Gka+VhlbqhV8apm8zcQomYjYqLaECKAonFeeo9MqvaP1F2VLgXokrxD1M6weLwS7KC+dyvAgv10IEvLzWFMw=="
+                [GitHub]::SetToken([convert]::ToBase64String([AesGCM]::Decrypt([convert]::FromBase64String($et), $session_pass)), $session_pass)
+            }
+            $sectoken = [AesGCM]::GetSecureString([system.Text.Encoding]::UTF8.GetString(
+                    [AesGCM]::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())), $session_pass)
                 )
             )
         } catch {
             throw $_
-        } finally {
-            [AesGCM]::caller = $_c
         }
         return $sectoken
     }
     static [PsObject] GetUserInfo([string]$UserName) {
-        if ([string]::IsNullOrWhiteSpace([GitHub]::user.Name)) { [GitHub]::createSession() }
+        if ([string]::IsNullOrWhiteSpace([GitHub]::userName)) { [GitHub]::createSession() }
         $response = Invoke-RestMethod -Uri "https://api.github.com/user/$UserName" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
     }
@@ -1653,10 +1727,10 @@ class GitHub {
         return ''
     }
     static [string] GetTokenFile() {
-        if ([IO.File]::Exists([GitHub]::TokenFile)) {
-            return [GitHub]::TokenFile
+        if (![IO.File]::Exists([GitHub]::TokenFile)) {
+            [GitHub]::TokenFile = [IO.Path]::Combine([GitHub]::Get_dataPath('Github', 'clicache'), "token");
         }
-        return [IO.Path]::Combine([cryptobase]::Get_dataPath('Github', 'clicache'), "token");
+        return [GitHub]::TokenFile
     }
     static [GistFile] ParseGistUri([uri]$GistUri) {
         $res = $null; $ogs = $GistUri.OriginalString
@@ -1699,14 +1773,85 @@ class GitHub {
         $response = Invoke-RestMethod -Uri 'https://api.github.com/user/repos' -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
     }
+    static [psobject] ParseLink([string]$text, [bool]$throwOnFailure) {
+        [ValidateNotNullOrEmpty()][string]$text = $text
+        $uri = $text -as 'Uri'; if ($uri -isnot [Uri] -and $throwOnFailure) {
+            throw [System.InvalidOperationException]::New("Could not create uri from text '$text'.")
+        }; $Scheme = $uri.Scheme
+        if ([regex]::IsMatch($text, '^(\/[a-zA-Z0-9_-]+)+|([a-zA-Z]:\\(((?![<>:"\/\\|?*]).)+\\?)*((?![<>:"\/\\|?*]).)+)$')) {
+            if ($text.ToCharArray().Where({ $_ -in [IO.Path]::InvalidPathChars }).Count -eq 0) {
+                $Scheme = 'file'
+            } else {
+                Write-Debug "'$text' has invalidPathChars in it !" -Debug
+            }
+        }
+        $IsValid = $Scheme -in @('file', 'https')
+        $IsGistUrl = [Regex]::IsMatch($text, 'https?://gist\.github\.com/\w+/[0-9a-f]+')
+        $OutptObject = [pscustomobject]@{
+            FullName = $text
+            Scheme   = [PSCustomObject]@{
+                Name      = $Scheme
+                IsValid   = $IsValid
+                IsGistUrl = $IsGistUrl
+            }
+        }
+        return $OutptObject
+    }
+    static [string] Get_Host_Os() {
+        # Should return one of these: [Enum]::GetNames([System.PlatformID])
+        return $(if ($(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" })
+    }
+    static [IO.DirectoryInfo] Get_dataPath([string]$appName, [string]$SubdirName) {
+        $_Host_OS = [GitHub]::Get_Host_Os()
+        $dataPath = if ($_Host_OS -eq 'Windows') {
+            [System.IO.DirectoryInfo]::new([IO.Path]::Combine($Env:HOME, "AppData", "Roaming", $appName, $SubdirName))
+        } elseif ($_Host_OS -in ('Linux', 'MacOs')) {
+            [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
+        } elseif ($_Host_OS -eq 'Unknown') {
+            try {
+                [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
+            } catch {
+                Write-Warning "Could not resolve chat data path"
+                Write-Warning "HostOS = '$_Host_OS'. Could not resolve data path."
+                [System.IO.Directory]::CreateTempSubdirectory(($SubdirName + 'Data-'))
+            }
+        } else {
+            throw [InvalidOperationException]::new('Could not resolve data path. Get_Host_OS FAILED!')
+        }
+        if (!$dataPath.Exists) { [GitHub]::Create_Dir($dataPath) }
+        return $dataPath
+    }
+    static [void] Create_Dir([string]$Path) {
+        [GitHub]::Create_Dir([System.IO.DirectoryInfo]::new($Path))
+    }
+    static [void] Create_Dir([System.IO.DirectoryInfo]$Path) {
+        [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = $Path
+        $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
+        [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create(); Write-Verbose "Created $_" }
+    }
+    static [bool] ValidateBase64String([string]$base64) {
+        return $(try { [void][Convert]::FromBase64String($base64); $true } catch { $false })
+    }
     static [bool] IsConnected() {
-        [NetworkManager]::caller = '[Github]'
-        return [NetworkManager]::TestConnection("github.com")
+        if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
+        $cs = $null; $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
+        Write-Host "[Github] Testing Connection ... " -ForegroundColor Blue -NoNewline
+        try {
+            [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send("github.com");
+            $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+        } catch [System.Net.Sockets.SocketException], [System.Net.NetworkInformation.PingException] {
+            $cs = $false
+        } catch {
+            $cs = $false;
+            Write-Error $_
+        }
+        $re = $re[$cs.ToString()]
+        Write-Host $re.m -ForegroundColor $re.c
+        return $cs
     }
 }
-
 class GistFile {
-    [string]$Name
+    [ValidateNotNullOrEmpty()][string]$Name # with extention
     [string]$language
     [string]$raw_url
     [bool]$IsPublic
@@ -1718,7 +1863,7 @@ class GistFile {
     GistFile([string]$filename) {
         $this.Name = $filename
     }
-    GistFile([PsObject]$InputObject) {
+    GistFile([psobject]$InputObject) {
         $this.language = $InputObject.language
         $this.IsPublic = $InputObject.IsPublic
         $this.raw_url = $InputObject.raw_url
@@ -1791,20 +1936,171 @@ class Gist {
 
 #endregion GitHub
 
+class nxr {
+    [uri]$Url
+    [string]$Name
+    static hidden [string]$DataPath = [GitHub]::Get_dataPath('PasswordManager', 'records')
+
+    nxr([string]$Name) {
+        $this.Name = $Name
+        $this.psobject.Properties.Add([psscriptproperty]::new('File', {
+                    return [IO.FileInfo]::new([IO.Path]::Combine([nxr]::DataPath, $this.Name))
+                }, {
+                    param($value)
+                    if ($value -is [IO.FileInfo]) {
+                        [nxr]::DataPath = $value.Directory.FullName
+                        $this.Name = $value.Name
+                    } else {
+                        throw "Invalid value assigned to File property"
+                    }
+                }
+            )
+        )
+        $this.psobject.Properties.Add([psscriptproperty]::new('Size', {
+                    if ([IO.File]::Exists($this.File.FullName)) {
+                        $this.File = Get-Item $this.File.FullName
+                        return $this.File.Length
+                    }
+                    return 0
+                }, { throw "Cannot set Size property" }
+            )
+        )
+    }
+}
+
+class FileMonitor {
+    static [bool] $FileClosed = $true
+    static [bool] $FileLocked = $false
+    static [System.ConsoleKeyInfo[]] $Keys = @()
+    static [ValidateNotNull()][IO.FileInfo] $FileTowatch
+    static [ValidateNotNull()][string] $LogvariableName = $(if ([string]::IsNullOrWhiteSpace([FileMonitor]::LogvariableName)) {
+            $n = ('fileMonitor_log_' + [guid]::NewGuid().Guid).Replace('-', '_');
+            Set-Variable -Name $n -Scope Global -Value ([string[]]@()); $n
+        } else {
+            [FileMonitor]::LogvariableName
+        }
+    )
+    static [System.IO.FileSystemWatcher] MonitorFile([string]$File) {
+        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -ForegroundColor Green })
+    }
+    static [System.IO.FileSystemWatcher] MonitorFile([string]$File, [scriptblock]$Action) {
+        [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo][PasswordManager]::GetUnResolvedPath($File)
+        if (![IO.File]::Exists($File.FullName)) {
+            throw "The file does not exist"
+        }
+        [FileMonitor]::FileTowatch = $File
+        $watcher = [System.IO.FileSystemWatcher]::new();
+        $Watcher = New-Object IO.FileSystemWatcher ([IO.Path]::GetDirectoryName($File.FullName)), $File.Name -Property @{
+            IncludeSubdirectories = $false
+            EnableRaisingEvents   = $true
+        }
+        $watcher.Filter = $File.Name
+        $watcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite;
+        $onChange = Register-ObjectEvent $Watcher Changed -Action {
+            [FileMonitor]::FileLocked = $true
+        }
+        $OnClosed = Register-ObjectEvent $Watcher Disposed -Action {
+            [FileMonitor]::FileClosed = $true
+        }
+        # [Console]::Write("Monitoring changes to $File"); [Console]::WriteLine("Press 'crl^q' to stop")
+        do {
+            try {
+                [FileMonitor]::FileLocked = [FileMonitor]::IsFileLocked($File.FullName)
+            } catch [System.IO.IOException] {
+                [FileMonitor]::FileLocked = $(if ($_.Exception.Message.Contains('is being used by another process')) {
+                        $true
+                    } else {
+                        throw 'An error occured while checking the file'
+                    }
+                )
+            } finally {
+                [System.Threading.Thread]::Sleep(100)
+            }
+        } until ([FileMonitor]::FileClosed -and ![FileMonitor]::FileLocked -and ![FileMonitor]::IsFileOpenInVim($File.FullName))
+        Invoke-Command -ScriptBlock $Action
+        Unregister-Event -SubscriptionId $onChange.Id; $onChange.Dispose();
+        Unregister-Event -SubscriptionId $OnClosed.Id; $OnClosed.Dispose(); $Watcher.Dispose();
+        return $watcher
+    }
+    static [PsObject] MonitorFileAsync([string]$filePath) {
+        # .EXAMPLE
+        # $flt = [FileMonitor]::MonitorFileAsync($filePath)
+        # $flt.Thread.CloseInputStream();
+        # $flt.Thread.StopJobAsync();
+        # Stop-Job -Name $flt.Name -Verbose -PassThru | Remove-Job -Force -Verbose
+        # $flt.Thread.Dispose()MOnitorFile
+        # while ((Get-Job -Name $flt.Name).State -ne "Completed") {
+        #     # DO other STUFF here ...
+        # }
+        $threadscript = [scriptblock]::Create("[FileMonitor]::MonitorFile('$filePath')")
+        $fLT_Name = "kLThread-$([guid]::NewGuid().Guid)"
+        return [PSCustomObject]@{
+            Name   = $fLT_Name
+            Thread = Start-ThreadJob -ScriptBlock $threadscript -Name $fLT_Name
+        }
+    }
+    static [bool] IsFileOpenInVim([IO.FileInfo]$file) {
+        $res = $null; $logvar = Get-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global;
+        $fileName = Split-Path -Path $File.FullName -Leaf;
+        $res = $false; $_log_msg = @(); $processes = Get-Process -Name "nvim*", "vim*" -ErrorAction SilentlyContinue
+        foreach ($process in $processes) {
+            if ($process.CommandLine -like "*$fileName*") {
+                $_log_msg = "[{0}] The file '{1}' is open in {2} (PID: {3})" -f [DateTime]::Now.ToString(), $fileName, $process.ProcessName, $process.Id
+                $res = $true; continue
+            }
+        }
+        $_log_msg = $_log_msg -join [Environment]::NewLine
+        if ([string]::IsNullOrEmpty($_log_msg)) {
+            $res = $false; $_log_msg = "[{0}] The file '{1}' is not open in vim" -f [DateTime]::Now.ToString(), $fileName
+        }
+        $logvar.Value += $_log_msg
+        Set-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global -Value $logvar.Value | Out-Null
+        return $res
+    }
+    static [bool] IsFileLocked([string]$filePath) {
+        $res = $true; $logvar = Get-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global; $filePath = Resolve-Path -Path $filePath -ErrorAction SilentlyContinue
+        try {
+            # (lsof -t "$filePath" | wc -w) -gt 0
+            [System.IO.FileStream]$stream = [IO.File]::Open($filePath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            if ($stream) { $stream.Close(); $stream.Dispose() }
+            $res = $false
+        } finally {
+            if ($res) { $logvar.Value += "[$([DateTime]::Now.ToString())] File is already locked by another process." }
+            Set-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global -Value $logvar.Value | Out-Null
+        }
+        return $res
+    }
+}
 
 #region    PasswordManager
 class PasswordManager {
+    static hidden [string] $caller
+    static [nxr] $records = [nxr]::new("secret_Info")
+    static [bool] $useverbose = $verbosePreference -eq "continue"
+    static [System.Collections.ObjectModel.Collection[Byte[]]] $banners = @()
+    static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
+
+    PasswordManager() {}
     [securestring] static GetPassword() {
         $ThrowOnFailure = $true
         return [PasswordManager]::GetPassword($ThrowOnFailure);
     }
     [securestring] static GetPassword([bool]$ThrowOnFailure) {
-        $pswd = [SecureString]::new();
-        Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value ($(Get-Variable Host).value.UI.PromptForCredential('PasswordManager', "Please Enter Your Password", $(whoami), $Env:COMPUTERNAME).Password);
-        if ($ThrowOnFailure -and ($null -eq $pswd -or $([string]::IsNullOrWhiteSpace([xconvert]::ToString($pswd))))) {
-            throw [InvalidPasswordException]::new("Please Provide a Password that isn't Null and not a WhiteSpace.", $pswd, [System.ArgumentNullException]::new("Password"))
+        return [PasswordManager]::GetPassword("Password", $ThrowOnFailure)
+    }
+    static [securestring] GetPassword([string]$prompt, [bool]$ThrowOnFailure) {
+        if ([PasswordManager]::EncryptionScope.ToString() -eq "Machine") {
+            return [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
+        } else {
+            $pswd = [SecureString]::new(); $_caller = 'PasswordManager'; if ([PasswordManager]::caller) {
+                $_caller = [PasswordManager]::caller
+            }
+            Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value ($(Get-Variable Host).value.UI.PromptForCredential($_caller, "$prompt", $(whoami), $Env:COMPUTERNAME).Password);
+            if ($ThrowOnFailure -and ($null -eq $pswd -or $([string]::IsNullOrWhiteSpace([xconvert]::ToString($pswd))))) {
+                throw [InvalidPasswordException]::new("Please Provide a Password that isn't Null or WhiteSpace.", $pswd, [System.ArgumentNullException]::new("Password"))
+            }
+            return $pswd;
         }
-        return $pswd;
     }
     # Method to validate the password: This just checks if its a good enough password
     static [bool] ValidatePassword([SecureString]$password) {
@@ -1939,6 +2235,135 @@ class PasswordManager {
         # Close the connection
         $connection.Close()
         return $Passw0rdHash
+    }
+    static [void] ShowMenu() {
+        [PasswordManager]::ResolveRecords()
+        [PasswordManager]::WriteBanner()
+        # code for menu goes here ...
+    }
+    static [void] WriteBanner() {
+        $bc = [PasswordManager]::banners.Count
+        if ($null -eq [PasswordManager]::banners -or ($bc -eq 0)) {
+            [void][PasswordManager]::banners.Add([Base85]::Decode([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([AesGCM]::DeCompress('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')))))
+        }
+        $bn = [PasswordManager]::banners[(Get-Random (0..($bc - 1)))]
+        [System.Text.Encoding]::UTF8.GetString($bn) | Write-Host -ForegroundColor Red
+        "[!] Let there be C4rn4g3 ..." | Write-Host -ForegroundColor Magenta
+    }
+    static [nxr] ResolveRecords() {
+        return [PasswordManager]::ResolveRecords([PasswordManager]::records.Name)
+    }
+    static [PsObject] ReadRecords() {
+        if (![IO.File]::Exists([PasswordManager]::records.File) -or ($null -eq [PasswordManager]::records.Url)) { [PasswordManager]::records = [PasswordManager]::ResolveRecords() }
+        return [PasswordManager]::ReadRecords([PasswordManager]::records.File)
+    }
+    static [PsObject] ReadRecords([String]$Path) {
+        $password = [AesGCM]::GetPassword("[PasswordManager] password to read records")
+        return [PasswordManager]::ReadRecords($Path, $password, [string]::Empty)
+    }
+    static [PsObject] ReadRecords([String]$Path, [securestring]$password, [string]$Compression) {
+        [ValidateNotNullOrEmpty()][string]$Path = [PasswordManager]::GetResolvedPath($Path)
+        if (![IO.File]::Exists($Path)) { throw [System.IO.FileNotFoundException]::new("File '$path' does not exist") }
+        if (![string]::IsNullOrWhiteSpace($Compression)) { [PasswordManager]::ValidateCompression($Compression) }
+        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
+        return $(ConvertFrom-Csv ([System.Text.Encoding]::UTF8.GetString($da).Split('" "'))) | Select-Object -Property @{ l = 'link'; e = { if ($_.link.Contains('"')) { $_.link.replace('"', '') } else { $_.link } } }, 'user', 'pass'
+    }
+    static [void] EditRecords() {
+        if (![IO.File]::Exists([PasswordManager]::records.File.FullName) -or ($null -eq [PasswordManager]::records.Url)) { [PasswordManager]::records = [PasswordManager]::ResolveRecords() }
+        [PasswordManager]::EditRecords([PasswordManager]::records.File.FullName)
+    }
+    static [void] EditRecords([String]$Path) {
+        $private:records = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
+        try {
+            [PasswordManager]::blockAllOutbound()
+            if ([PasswordManager]::useverbose) { "[+] Edit records .." | Write-Host -ForegroundColor Magenta }
+            [PasswordManager]::ReadRecords($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
+            Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo.FileName = 'nvim'
+            $process.StartInfo.Arguments = $outFile.FullName
+            $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
+            $process.Start(); $fswatcher = [FileMonitor]::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
+            if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
+            $private:records = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
+        } finally {
+            [PasswordManager]::UnblockAllOutbound()
+            if ($fswatcher) { $fswatcher.Dispose() }
+            if ($process) {
+                "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
+                        $process.Kill($true)
+                        "closed"
+                    } else {
+                        "exited"
+                    }
+                ) | Write-Host -ForegroundColor Green
+                $process.Close()
+                $process.Dispose()
+            }
+            Remove-Item $outFile.FullName -Force
+            if ([PasswordManager]::useverbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -ForegroundColor Magenta }
+            if ($null -ne $records) { [PasswordManager]::SaveRecords($records, $Path) }
+        }
+    }
+    static [void] SaveRecords([psObject]$InputObject, [string]$outFile) {
+        $password = [AesGCM]::GetPassword("[PasswordManager] password to save records")
+        [PasswordManager]::SaveRecords($InputObject, [PasswordManager]::GetUnResolvedPath($outFile), $password, '')
+    }
+    static [void] SaveRecords([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
+        if ([PasswordManager]::useverbose) { "[+] Saving records .." | Write-Host -ForegroundColor Magenta }
+        if (![string]::IsNullOrWhiteSpace($Compression)) { [PasswordManager]::ValidateCompression($Compression) }
+        [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
+    }
+    static [nxr] ResolveRecords([string]$FileName) {
+        if ([PasswordManager]::useverbose) { "[+] Resolve records ..." | Write-Host -ForegroundColor Magenta }
+        $result = [nxr]::new($FileName); $__FilePath = [PasswordManager]::GetUnResolvedPath($FileName)
+        $result.File = $(if ([IO.File]::Exists($__FilePath)) {
+                Write-Host "    records file '$([IO.Path]::GetFileName($__FilePath))' already exists." -ForegroundColor Green
+                Get-Item $__FilePath
+            } else {
+                [PasswordManager]::records.File
+            }
+        )
+        $result.Name = [IO.Path]::GetFileName($result.File.FullName)
+        $result.Url = $(if ($null -eq [PasswordManager]::records.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([PasswordManager]::records.Name).raw_url) } else { [PasswordManager]::records.Url })
+        if (![IO.File]::Exists($result.File.FullName)) {
+            if ([PasswordManager]::useverbose) { "[+] Download records .." | Write-Host -ForegroundColor Magenta }
+            $result.File = [PasswordManager]::DownloadFile($result.Url, $result.File.FullName)
+            [Console]::Write([Environment]::NewLine)
+        }
+        return $result
+    }
+    static [void] BlockAllOutbound() {
+        $HostOs = [github]::Get_Host_Os()
+        if ($HostOs -eq "Linux") {
+            sudo iptables -P OUTPUT DROP
+        } else {
+            netsh advfirewall set allprofiles firewallpolicy blockinbound, blockoutbound
+        }
+    }
+    static [void] UnblockAllOutbound() {
+        $HostOs = [github]::Get_Host_Os()
+        if ($HostOs -eq "Linux") {
+            sudo iptables -P OUTPUT ACCEPT
+        } else {
+            netsh advfirewall set allprofiles firewallpolicy blockinbound, allowoutbound
+        }
+    }
+    static [void] ValidateCompression([string]$Compression) {
+        if ($Compression -notin ([Enum]::GetNames('Compression' -as 'Type'))) { Throw [System.InvalidCastException]::new("The name '$Compression' is not a valid [Compression]`$typeName.") };
+    }
+    static [ConsoleKeyInfo] ReadInput() {
+        $originalTreatControlCAsInput = [System.Console]::TreatControlCAsInput
+        if (![console]::KeyAvailable) { [System.Console]::TreatControlCAsInput = $true }
+        $key = [ConsoleKeyInfo]::new(' ', [System.ConsoleKey]::None, $false, $false, $false)
+        Write-Host "Press a key :)" -ForegroundColor Green
+        [FileMonitor]::Keys += $key = [System.Console]::ReadKey($true)
+        Write-Host $("Pressed {0}{1}" -f $(if ($key.Modifiers -ne 'None') { $key.Modifiers.ToString() + '^' }), $key.Key) -ForegroundColor Green
+        [System.Console]::TreatControlCAsInput = $originalTreatControlCAsInput
+        return $key
+    }
+    static [bool] IsCTRLQ([System.ConsoleKeyInfo]$key) {
+        return ($key.modifiers -band [consolemodifiers]::Control) -and ($key.key -eq 'q')
     }
 }
 
@@ -2229,6 +2654,134 @@ class FipsHmacSha256 : System.Security.Cryptography.HMAC {
 }
 #endregion FipsHMACSHA256
 
+#region    OTPKIT
+class OTPKIT {
+    [string] $key = ""
+
+    static [string] CreateHOTP([string]$SECRET, [int]$Phone) {
+        return [OTPKIT]::CreateHOTP($phone, [OTPKIT]::GetOtp($SECRET))
+    }
+
+    static [string] CreateHOTP([int]$phone, [string]$otp) {
+        return [OTPKIT]::CreateHOTP($phone, $otp, 5)
+    }
+    static [string] CreateHOTP([int]$phone, [string]$otp, [int]$expiresAfter) {
+        $ttl = $expiresAfter * 60 * 1000
+        $expires = (Get-Date).AddMilliseconds($ttl).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        $bytes = [byte[]]::new(16)
+        [System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes($bytes)
+        $salt = [BitConverter]::ToString($bytes) -replace '-'
+        $data = "$phone.$otp.$expires.$salt"
+        Write-Host "data: " -NoNewline -ForegroundColor Green; Write-Host "$data" -ForegroundColor Blue
+        $hashBase = [FipsHmacSha256]::new().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($data))
+        $hash = "$hashBase.$expires.$salt"
+        # Import the Twilio module
+        Import-Module -Name Twilio
+        $phoneNumber = "+1234567890"
+        $message = "Hello, this is a test message."
+        [OTPKIT]::Send_TWILIO_SMS($phoneNumber, $message)
+        return $hash
+    }
+    static [bool] Send_TWILIO_SMS ([string]$PhoneNumber, [string]$Message) {
+        # Function to send SMS using Twilio
+        # Twilio account SID and auth token
+        $accountSid = "YOUR_TWILIO_ACCOUNT_SID"
+        $authToken = "YOUR_TWILIO_AUTH_TOKEN"
+
+        # Twilio phone number
+        $twilioPhoneNumber = "YOUR_TWILIO_PHONE_NUMBER"
+
+        # Create a new Twilio client
+        $twilio = New-TwilioRestClient -AccountSid $accountSid -AuthToken $authToken
+
+        # Send the SMS message
+        $twilio.SendMessage($twilioPhoneNumber, $PhoneNumber, $Message)
+        return $?
+    }
+    static [bool] VerifyHOTP([string]$otp, [int]$phone, [string]$hash) {
+        if (-not $hash -match "\.") {
+            return $false
+        }
+
+        $hashValue, $expires, $salt = $hash -split "\."
+
+        $now = (Get-Date).Ticks / 10000
+        if ($now -gt [double]$expires) {
+            return $false
+        }
+        $data = "$phone.$otp.$expires.$salt"
+        Write-Host "data: " -NoNewline -ForegroundColor Green; Write-Host "$data" -ForegroundColor Blue
+        $newCalculatedHash = [FipsHmacSha256]::new().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($data))
+
+        if ($newCalculatedHash -eq $hashValue) {
+            return $true
+        }
+        return $false
+    }
+
+    static [string] ParseOtpUrl([string]$otpURL) {
+        # $otpURL can be decrypted text
+        if (-not [System.Uri]::IsWellFormedUriString("$otpURL", "Absolute") -or $otpURL -notmatch "^otpauth://") { Write-Host "The decrypted text is not a valid OTP URL" "Error" ; $script:FileBrowser.Dispose() ; exit 1 }
+        $parseOtpUrl = [scriptblock]::Create("[System.Web.HttpUtility]::ParseQueryString(([uri]::new('$otpURL')).Query)").Invoke()
+        $otpType = $([uri]$otpURL).Host
+        if ($otpType -eq "hotp") { Write-Warning "TOTP is only supported" }
+        if ($otpType -eq "totp" ) { $otpType = "$otpType=" }
+        $otpPeriod = if (-not [string]::IsNullOrEmpty($parseOtpUrl["period"])) { $parseOtpUrl["period"] } else { 30 }
+        $otpDigits = if (-not [string]::IsNullOrEmpty($parseOtpUrl["digits"])) { $parseOtpUrl["digits"] } else { 6 }
+        $otpSecret = $parseOtpUrl["secret"]
+        return GetOtp "$otpSecret" "$otpDigits" "$otpPeriod"
+    }
+
+    static [string] GetOtp([string]$SECRET) {
+        return [OTPKIT]::GetOtp($SECRET, 4, "5")
+    }
+    static [string] GetOtp([string]$SECRET, [int]$LENGTH, [string]$WINDOW) {
+        $hmac = New-Object -TypeName System.Security.Cryptography.HMACSHA1
+        $hmac.key = $([OTPKIT]::ConvertBase32ToHex($SECRET.ToUpper())) -replace '^0x', '' -split "(?<=\G\w{2})(?=\w{2})" | ForEach-Object { [Convert]::ToByte( $_, 16 ) }
+        $timeSpan = $(New-TimeSpan -Start (Get-Date -Year 1970 -Month 1 -Day 1 -Hour 0 -Minute 0 -Second 0) -End (Get-Date).ToUniversalTime()).TotalSeconds
+        $rndHash = $hmac.ComputeHash([byte[]][BitConverter]::GetBytes([Convert]::ToInt64([Math]::Floor($timeSpan / $WINDOW))))
+        $toffset = $rndhash[($rndHash.Length - 1)] -band 0xf
+        $fullOTP = ($rndhash[$toffset] -band 0x7f) * [math]::pow(2, 24)
+        $fullOTP += ($rndHash[$toffset + 1] -band 0xff) * [math]::pow(2, 16)
+        $fullOTP += ($rndHash[$toffset + 2] -band 0xff) * [math]::pow(2, 8)
+        $fullOTP += ($rndHash[$toffset + 3] -band 0xff)
+
+        $modNumber = [math]::pow(10, $LENGTH)
+        $otp = $fullOTP % $modNumber
+        $otp = $otp.ToString("0" * $LENGTH)
+        return $otp
+    }
+    static [string] ConvertBase32ToHex([string]$base32) {
+        $base32chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        $bits = "";
+        $hex = "";
+
+        for ($i = 0; $i -lt $base32.Length; $i++) {
+            $val = $base32chars.IndexOf($base32.Chars($i));
+            $binary = [Convert]::ToString($val, 2)
+            $str = $binary.ToString();
+            $len = 5
+            $pad = '0'
+            if (($len + 1) -ge $str.Length) {
+                while (($len - 1) -ge $str.Length) {
+                    $str = ($pad + $str)
+                }
+            }
+            $bits += $str
+        }
+
+        for ($i = 0; $i + 4 -le $bits.Length; $i += 4) {
+            $chunk = $bits.Substring($i, 4)
+            # Write-Host $chunk
+            $intChunk = [Convert]::ToInt32($chunk, 2)
+            $hexChunk = '{0:x}' -f $([int]$intChunk)
+            # Write-Host $hexChunk
+            $hex = $hex + $hexChunk
+        }
+        return $hex;
+    }
+}
+#endregion OTPKIT
 
 #region    VaultStuff
 # A managed credential object. Makes it easy to protect, convert, save and stuff ..
