@@ -726,7 +726,7 @@ class CryptoBase {
             $pswd = [SecureString]::new(); $_caller = 'PasswordManager'; if ([CryptoBase]::caller) {
                 $_caller = [CryptoBase]::caller
             }
-            Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value $(Read-Host -Prompt "[$_caller] $Prompt" -AsSecureString);
+            Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value $(Read-Host -Prompt "$_caller $Prompt" -AsSecureString);
             if ($ThrowOnFailure -and ($null -eq $pswd -or $([string]::IsNullOrWhiteSpace([xconvert]::ToString($pswd))))) {
                 throw [InvalidPasswordException]::new("Please Provide a Password that isn't Null or WhiteSpace.", $pswd, [System.ArgumentNullException]::new("Password"))
             }
@@ -4216,15 +4216,14 @@ class AesGCM : CryptoBase {
             $_bytes = $bytes;
             $aes = $null; Set-Variable -Name aes -Scope Local -Visibility Private -Option Private -Value $([ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke());
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                Write-Host "$([AesGCM]::caller) [+] Encryption [$i/$iterations] ...$(
-                    # if ($Protect) { $_bytes = [xconvert]::ToProtected($_bytes, $Salt, [EncryptionScope]::User) }
-                    # Generate a random IV for each iteration:
-                    [byte[]]$IV = $null; Set-Variable -Name IV -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($password), $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes($IV_SIZE));
-                    $tag = [byte[]]::new($TAG_SIZE);
-                    $Encrypted = [byte[]]::new($_bytes.Length);
-                    [void]$aes.Encrypt($IV, $_bytes, $Encrypted, $tag, $associatedData);
-                    $_bytes = [Shuffl3r]::Combine([Shuffl3r]::Combine($Encrypted, $IV, $Password), $tag, $Password);
-                ) Done" -ForegroundColor Yellow
+                # Write-Host "$([AesGCM]::caller) [+] Encryption [$i/$iterations] ... Done" -ForegroundColor Yellow
+                # if ($Protect) { $_bytes = [xconvert]::ToProtected($_bytes, $Salt, [EncryptionScope]::User) }
+                # Generate a random IV for each iteration:
+                [byte[]]$IV = $null; Set-Variable -Name IV -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($password), $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes($IV_SIZE));
+                $tag = [byte[]]::new($TAG_SIZE);
+                $Encrypted = [byte[]]::new($_bytes.Length);
+                [void]$aes.Encrypt($IV, $_bytes, $Encrypted, $tag, $associatedData);
+                $_bytes = [Shuffl3r]::Combine([Shuffl3r]::Combine($Encrypted, $IV, $Password), $tag, $Password);
             }
         } catch {
             throw $_
@@ -4308,15 +4307,14 @@ class AesGCM : CryptoBase {
             $_bytes = if (![string]::IsNullOrWhiteSpace($Compression)) { [xconvert]::ToDecompressed($bytes, $Compression) } else { $bytes }
             $aes = [ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke()
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                Write-Host "$([AesGCM]::caller) [+] Decryption [$i/$iterations] ...$(
-                    # if ($UnProtect) { $_bytes = [xconvert]::ToUnProtected($_bytes, $Salt, [EncryptionScope]::User) }
-                    # Split the real encrypted bytes from nonce & tags then decrypt them:
-                    ($b, $n1) = [Shuffl3r]::Split($_bytes, $Password, $TAG_SIZE);
-                    ($b, $n2) = [Shuffl3r]::Split($b, $Password, $IV_SIZE);
-                    $Decrypted = [byte[]]::new($b.Length);
-                    $aes.Decrypt($n2, $b, $n1, $Decrypted, $associatedData);
-                    $_bytes = $Decrypted;
-                ) Done" -ForegroundColor Yellow
+                # Write-Host "$([AesGCM]::caller) [+] Decryption [$i/$iterations] ... Done" -ForegroundColor Yellow
+                # if ($UnProtect) { $_bytes = [xconvert]::ToUnProtected($_bytes, $Salt, [EncryptionScope]::User) }
+                # Split the real encrypted bytes from nonce & tags then decrypt them:
+                ($b, $n1) = [Shuffl3r]::Split($_bytes, $Password, $TAG_SIZE);
+                ($b, $n2) = [Shuffl3r]::Split($b, $Password, $IV_SIZE);
+                $Decrypted = [byte[]]::new($b.Length);
+                $aes.Decrypt($n2, $b, $n1, $Decrypted, $associatedData);
+                $_bytes = $Decrypted;
             }
         } catch {
             if ($_.FullyQualifiedErrorId -eq "AuthenticationTagMismatchException") {
