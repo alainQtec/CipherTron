@@ -742,6 +742,15 @@ class CryptoBase {
 #region    Custom_ObjectConverter
 class xconvert : System.ComponentModel.TypeConverter {
     xconvert() {}
+    static [string] Base32ToHex([string]$base32String) {
+        return [System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($base32String)).Replace("-", "").ToLower()
+    }
+    static [string] Base32FromHex([string]$hexString) {
+        return [System.Text.Encoding]::UTF8.GetString(([byte[]] -split ($hexString -replace '..', '0x$& ')))
+    }
+    static [string] GuidFromHex([string]$hexString) {
+        return [System.Guid]::new(([byte[]] -split ($hexString -replace '..', '0x$& '))).ToString()
+    }
     static [string] Tostring([k3Y]$K3Y) {
         if ($null -eq $K3Y) { return [string]::Empty };
         $NotNullProps = ('User', 'UID', 'Expiration');
@@ -2154,6 +2163,8 @@ class Argrecord {
 class ArgonCage : CryptoBase {
     static [Argrecord] $records = [Argrecord]::new("secret_Info")
     static [bool] $useverbose = $verbosePreference -eq "continue"
+    static [bool] $CacheCreds = $true
+    static [string] $CredsCachePath = [ArgonCage]::Get_dataPath("ArgonCage", "CredsCache")
     static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
 
@@ -2420,12 +2431,21 @@ class ArgonCage : CryptoBase {
 #
 #     The main use is to never store the actual input password, rather keep its hash
 #     # STEP 1. Create Hash and Store it somewhere secure.
-#     $hashSTR = [xconvert]::ToHexString([HKDF2]::GetToken([xconvert]::ToSecurestring("My_passw0rdSTR@123")))
+#     $hashSTR = [HKDF2]::GetToken((Read-Host -Prompt "password" -AsSecureString))
 #     $hashSTR | Out-File ReallySecureFilePath; # keep the hash string it in a file Or in a database
 #
 #     # STEP 2. Use the Hash to verify if $InputPassword is legit, then login/orNot
-#     $InputPassword = "My_passw0rdSTR@123"
-#     $IsValidPasswd = [HKDF2]::VerifyToken([xconvert]::FromHexString((cat ReallySecureFilePath)), [xconvert]::ToSecurestring($InputPassword))
+#     [SecureString]$InputPassword = Read-Host -Prompt "password" -AsSecureString
+#     $IsValidPasswd = [HKDF2]::VerifyToken((cat ReallySecureFilePath), $InputPassword)
+#
+#    Real Use case:
+#    # STEP 1.
+#    $InputPass = Read-Host -Prompt "Password to encrypt" -AsSecureString
+#    [HKDF2]::GetToken($InputPass) | Out-File ReallySecureFilePath; # keep the hash string it in a file Or in a database
+#    $Password2Use = [HKDF2]::Resolve($InputPass, (cat ReallySecureFilePath)) # get derived password, and use itinstead of input password
+#
+#    # STEP 2.
+#    $Password2Use = [HKDF2]::Resolve((Read-Host -Prompt "password ro decrypt" -AsSecureString), (cat ReallySecureFilePath))
 # .NOTES
 #     Inspired by: - https://asecuritysite.com/powershell/enc07
 #                  - https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
