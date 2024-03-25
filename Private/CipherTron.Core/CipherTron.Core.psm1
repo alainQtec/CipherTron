@@ -1759,7 +1759,7 @@ class GitHub {
         return $response
     }
     static [PsObject] GetGist([uri]$Uri) {
-        $l = [GitHub]::ParseGistUri($Uri)
+        $l = [GistFile]::Create($Uri)
         return [GitHub]::GetGist($l.Owner, $l.Id)
     }
     static [PsObject] GetGist([string]$UserName, [string]$GistId) {
@@ -1805,42 +1805,6 @@ class GitHub {
             [GitHub]::TokenFile = [IO.Path]::Combine([GitHub]::Get_dataPath('Github', 'clicache'), "token");
         }
         return [GitHub]::TokenFile
-    }
-    static [GistFile] ParseGistUri([uri]$GistUri) {
-        $res = $null; $ogs = $GistUri.OriginalString
-        $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
-        $seg = $GistUri.Segments
-        $res = $(if ($IsRawUri) {
-                $name = $seg[-1]
-                $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
-                $rtri = $rtri.Remove($rtri.Length - 1)
-                $info = [GitHub]::GetGist([uri]::new($rtri))
-                $file = $info.files."$name"
-                [PsCustomObject]@{
-                    language = $file.language
-                    IsPublic = $info.IsPublic
-                    raw_url  = $file.raw_url
-                    Owner    = $info.owner.login
-                    type     = $file.type
-                    filename = $name
-                    size     = $file.size
-                    Id       = $seg[2].Replace('/', '')
-                }
-            } else {
-                # $info = [GitHub]::GetGist($GistUri)
-                [PsCustomObject]@{
-                    language = ''
-                    IsPublic = $null
-                    raw_url  = ''
-                    Owner    = $seg[1].Split('/')[0]
-                    type     = ''
-                    filename = ''
-                    size     = ''
-                    Id       = $seg[-1]
-                }
-            }
-        )
-        return [GistFile]::New($res)
     }
     static [PsObject] GetUserRepositories() {
         if ($null -eq [GitHub]::webSession) { [Github]::createSession() }
@@ -1925,27 +1889,109 @@ class GitHub {
     }
 }
 class GistFile {
-    [ValidateNotNullOrEmpty()][string]$Name # with extention
+    [string]$Name # with extention
     [string]$language
+    [string]$type
+    [string]$Owner
     [string]$raw_url
     [bool]$IsPublic
-    [string]$Owner
-    [string]$type
+    [bool]$truncated
     [string]$Id
     [int]$size
-
+    [GistFile[]]$files
+    hidden [string]$content
+    static hidden [string]$UserName
+    static hidden [PsObject]$ChildItems
     GistFile([string]$filename) {
         $this.Name = $filename
     }
-    GistFile([psobject]$InputObject) {
-        $this.language = $InputObject.language
-        $this.IsPublic = $InputObject.IsPublic
-        $this.raw_url = $InputObject.raw_url
-        $this.Owner = $InputObject.Owner
-        $this.type = $InputObject.type
-        $this.Name = $InputObject.filename
-        $this.size = $InputObject.size
-        $this.Id = $InputObject.Id
+    GistFile([PsObject]$GistInfo) {
+        $this.language = $GistInfo.language
+        $this.IsPublic = $GistInfo.IsPublic
+        $this.raw_url = $GistInfo.raw_url
+        $this.type = $GistInfo.type
+        $this.Name = $GistInfo.filename
+        $this.size = $GistInfo.size
+        $this.Id = $GistInfo.Id
+        $this.Owner = $GistInfo.Owner
+        if ([string]::IsNullOrWhiteSpace($this.Owner)) {
+            if (![string]::IsNullOrWhiteSpace([GistFile]::UserName)) {
+                $this.Owner = [GistFile]::UserName
+            } else {
+                Write-Warning "Gist Owner was not set!"
+            }
+        }
+        if ($null -eq ([GistFile]::ChildItems) -and ![string]::IsNullOrWhiteSpace($this.Id)) {
+            Write-Verbose "[-] Get [GistFile]::ChildItems ..."
+            [GistFile]::ChildItems = [GitHub]::GetGist($this.Owner, $this.Id).files
+            Write-Verbose "    Done."
+        }
+        if ($null -ne [GistFile]::ChildItems) {
+            $_files = $null; [string[]]$filenames = [GistFile]::ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+            try {
+                $_files = [GistFile[]]$filenames.Foreach({
+                        Write-Verbose "[-] Creating gist: $_ ...."
+                        $_Item = [GistFile]::ChildItems."$_"
+                        $_Gist = [GistFile]::new($_Item.filename)
+                        $_Gist.language = $_Item.language
+                        $_Gist.Ispublic = $this.IsPublic
+                        $_Gist.raw_url = $_Item.raw_url
+                        $_Gist.type = $_Item.type
+                        $_Gist.size = $_Item.size
+                        $_Gist.content = $_Item.content
+                        $_Gist.Owner = $this.Owner; $_Gist.Id = $this.Id
+                        $_Gist
+                        Write-Verbose "    Done."
+                    }
+                )
+            } finally {
+                [GistFile]::ChildItems = $null
+                $this.files = $_files
+                if ([string]::IsNullOrWhiteSpace($this.Name)) {
+                    $this.Name = $filenames[0]
+                }
+            }
+            Write-Verbose "   Completed."
+        }
+    }
+    static [GistFile] Create([uri]$GistUri) {
+        $res = $null; $ogs = $GistUri.OriginalString
+        $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
+        $seg = $GistUri.Segments
+        $res = $(if ($IsRawUri) {
+                $_name = $seg[-1]
+                $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
+                $rtri = $rtri.Remove($rtri.Length - 1)
+                $info = [GitHub]::GetGist([uri]::new($rtri))
+                $file = $info.files."$_name"
+                [PsCustomObject]@{
+                    language = $file.language
+                    IsPublic = $info.IsPublic
+                    raw_url  = $file.raw_url
+                    Owner    = $info.owner.login
+                    type     = $file.type
+                    filename = $_name
+                    size     = $file.size
+                    Id       = $seg[2].Replace('/', '')
+                }
+            } else {
+                # $info = [GitHub]::GetGist($GistUri)
+                [PsCustomObject]@{
+                    language = ''
+                    IsPublic = $null
+                    raw_url  = ''
+                    Owner    = $seg[1].Split('/')[0]
+                    type     = ''
+                    filename = ''
+                    size     = ''
+                    Id       = $seg[-1]
+                }
+            }
+        )
+        if (![string]::IsNullOrWhiteSpace($res.Owner)) {
+            [GistFile]::UserName = $res.Owner
+        }
+        return [GistFile]::New($res)
     }
     [string] ShowFileInfo() {
         return "File: $($this.Name)"
@@ -2161,15 +2207,20 @@ class Argrecord {
 #     [ArgonCage]::New()
 #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
 class ArgonCage : CryptoBase {
+    [ValidateNotNullOrEmpty()][Config] $Config
+    [ValidateNotNullOrEmpty()][version] $Version
+    static hidden [ValidateNotNull()][SessionTmp] $Tmp
     static [Argrecord] $records = [Argrecord]::new("secret_Info")
     static [bool] $useverbose = $verbosePreference -eq "continue"
-    static [bool] $CacheCreds = $true
-    static [string] $CredsCachePath = [ArgonCage]::Get_dataPath("ArgonCage", "CredsCache")
     static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
 
-    ArgonCage() {}
-
+    ArgonCage() {
+        $this.Version = [ArgonCage]::GetVersion()
+        $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ return [ArgonCage]::Get_dataPath('ArgonCage', 'Data') })))
+        $this.SetTMPvariables(); $this.SaveConfigs() # $this.ImportConfigs()
+        $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ [NetworkManager]::caller = '[ArgonCage]'; return ![NetworkManager]::TestConnection('github.com') })))
+    }
     static [void] ShowMenu() {
         [ArgonCage]::ResolveRecords()
         [ArgonCage]::WriteBanner()
@@ -2182,7 +2233,145 @@ class ArgonCage : CryptoBase {
         [ArgonCage]::banners[(Get-Random (0..([ArgonCage]::banners.Count - 1)))].Tostring() | Write-Host -ForegroundColor Magenta
         "[!] https://github.com/alainQtec/argoncage" | Write-Host -ForegroundColor Red
     }
-    # Method to validate the password: This just checks if its a good enough password
+    [void] RegisterUser() {
+        # TODO: FINSISH this .. I'm tir3d!
+        # store the encrypted(user+ hashedPassword) s in a file. ie:
+        # user1:HashedPassword1 -encrypt-> 3dsf#s3s#$3!@dd*34d@dssxb
+        # user2:HashedPassword2 -encrypt-> dds#$3!@dssd*sf#s343dfdsf
+    }
+    [bool] Login([string]$UserName, [securestring]$Password) {
+        # This method authenticates the user by verifying the supplied username and password.
+        # Todo: replace this with a working authentication mechanism.
+        [ValidateNotNullOrEmpty()][string]$username = $username
+        [ValidateNotNullOrEmpty()][securestring]$password = $password
+        $valid_username = "example_user"
+        $valid_password = "example_password"
+        if ($username -eq $valid_username -and $password -eq $valid_password) {
+            return $true
+        } else {
+            return $false
+        }
+    }
+    static [void] LoadUsers([string]$UserFile) {
+        [ValidateNotNullOrEmpty()][string]$UserFile = $UserFile
+        # Reads the user file and loads the usernames and hashed passwords into a hashtable.
+        if (Test-Path $UserFile) {
+            $lines = Get-Content $UserFile
+            foreach ($line in $lines) {
+                $parts = $line.Split(":")
+                $username = $parts[0]
+                $password = $parts[1]
+                [ArgonCage]::Tmp.vars.Users[$username] = $password
+            }
+        }
+    }
+    static [void] RegisterUser([string]$username, [securestring]$password) {
+        [ValidateNotNullOrEmpty()][string]$username = $username
+        [ValidateNotNullOrEmpty()][securestring]$password = $password
+        # Registers a new user with the specified username and password.
+        # Hashes the password and stores it in the user file.
+        $UserFile = ''
+        $hashedPassword = $password | ConvertFrom-SecureString
+        $line = "{0}:{1}" -f $username, $hashedPassword
+        Add-Content $UserFile $line
+        [ArgonCage]::Tmp.vars.Users[$username] = $hashedPassword
+    }
+    [void] EditConfig() {
+        if ($null -eq $this.Config) {
+            throw 'Start ArgonCage first'
+        }; [AesGCM]::caller = '[ArgonCage]'
+        $config_file = $this.Get_Config_Path()
+        if (![IO.File]::Exists($config_file)) {
+            New-Item -Type File -Path $config_file
+            #Export current config to the file
+        }
+        Write-Verbose "Editing $config_file ..."
+        code $config_file
+    }
+    [void] SaveConfigs() {
+        [Config]::caller = "[$($this.GetType().Name)]"; $this.Config.Save()
+    }
+    [void] SyncConfigs() {
+        # Imports remote configs into current ones, then uploads the updated version to github gist
+        # Compare REMOTE's lastWritetime with [IO.File]::GetLastWriteTime($this.File)
+        $this.ImportConfig($this.Config.Remote); $this.SaveConfigs()
+    }
+    [void] ImportConfigs() {
+        [Config]::caller = "[$($this.GetType().Name)]"; [void]$this.Config.Import($this.Config.File)
+    }
+    [void] ImportConfigs([uri]$raw_uri) {
+        # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
+        [Config]::caller = "[$($this.GetType().Name)]"; $this.Config.Import($raw_uri)
+    }
+    [bool] DeleteConfigs() {
+        return [bool]$(
+            try {
+                $configFiles = ([GitHub]::GetTokenFile() | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File, ($this.DataPath | Get-ChildItem -File -Recurse).FullName
+                $configFiles.Foreach({ Remove-Item -Path $_ -Force -Verbose });
+                $true
+            } catch { $false }
+        )
+    }
+    [void] SetConfigs() { $this.SetConfigs([string]::Empty, $false) }
+    [void] SetConfigs([string]$ConfigFile) { $this.SetConfigs($ConfigFile, $true) }
+    [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
+    [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
+        [AesGCM]::caller = "[$($this.GetType().Name)]"
+        if ($null -eq $this.Config) { $this.Config = [Config]::new([ArgonCage]::Get_default_Config()) }
+        if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [ArgonCage]::GetUnResolvedPath($ConfigFile) }
+        if (![IO.File]::Exists($this.Config.File)) {
+            if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
+                throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File)'")
+            }; [void](New-Item -ItemType File -Path $this.Config.File)
+        }
+    }
+    [string] Get_Config_Path() {
+        return [ArgonCage]::Get_Config_Path($this.Config.FileName)
+    }
+    static [string] Get_Config_Path([string]$FileName) {
+        return [IO.Path]::Combine((Split-Path -Path ([ArgonCage]::Get_dataPath())), $FileName)
+    }
+    [void] SetTMPvariables() {
+        # Sets default variables and stores them in $this::Tmp.vars
+        # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
+        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        if ($null -eq $this.Config) { $this.SetConfigs() }
+        [ArgonCage]::Tmp.vars.Set(@{
+                Users            = @{}
+                Host_Os          = [ArgonCage]::Get_Host_Os()
+                ExitCode         = 0
+                Quick_Exit       = $this.Config.Quick_Exit  #ie: if true, then no Questions asked, Just closes the damn thing.
+                OfflineMode      = $this.IsOffline
+                Finish_reason    = ''
+                OgWindowTitle    = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
+                CurrentsessionId = ''
+                WhatIf_IsPresent = [bool]$((Get-Variable WhatIfPreference).Value.IsPresent)
+            }
+        )
+    }
+    static [hashtable] Get_default_Config() {
+        $Config_FileName = 'Config.enc'
+        $default_DataDir = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
+        $default_Config = @{
+            Remote         = ''
+            FileName       = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
+            File           = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine((Split-Path -Path $default_DataDir.FullName), $Config_FileName))
+            GistUri        = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
+            ERROR_NAMES    = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
+            NoApiKeyHelp   = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
+            ThrowNoApiKey  = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
+            UsageHelp      = "Usage:`nHere's an example of how to use this Password manager:`n   `$pm = [ArgonCage]::new()`n   `$pm.login()`n`nAnd make sure you have Internet."
+            CacheCreds     = $true
+            CredsCachePath = [IO.Path]::Combine($default_DataDir.FullName, "CachedCreds" , "CredsCache.enc")
+            LastWriteTime  = [datetime]::Now
+        }
+        $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
+        Write-Host "[ArgonCage] Get Remote gist uri for config ..." -ForegroundColor Blue
+        $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)
+        Write-Host "[ArgonCage] Get Remote gist uri Complete" -ForegroundColor Blue
+        return $default_Config
+    }
+    # Method to validate the password: This Just checks if its a good enough password
     static [bool] ValidatePassword([SecureString]$password) {
         $IsValid = $false; $minLength = 8; $handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
         try {
@@ -2408,6 +2597,10 @@ class ArgonCage : CryptoBase {
         Write-Host $("Pressed {0}{1}" -f $(if ($key.Modifiers -ne 'None') { $key.Modifiers.ToString() + '^' }), $key.Key) -ForegroundColor Green
         [System.Console]::TreatControlCAsInput = $originalTreatControlCAsInput
         return $key
+    }
+    static [version] GetVersion() {
+        # Returns the current version of the chatbot.
+        return [version]::New($script:localizedData.ModuleVersion)
     }
     static [bool] IsCTRLQ([System.ConsoleKeyInfo]$key) {
         return ($key.modifiers -band [consolemodifiers]::Control) -and ($key.key -eq 'q')
@@ -6140,7 +6333,7 @@ class CipherTron : CryptoBase {
     [ValidateNotNullOrEmpty()][version] $Version
     [ValidateNotNullOrEmpty()][chatPresets] $Presets
     static [ValidateNotNullOrEmpty()][ChatSession] $ChatSession
-    static hidden [ValidateNotNull()][chatTmp] $Tmp
+    static hidden [ValidateNotNull()][SessionTmp] $Tmp
     static hidden [ValidateNotNullOrEmpty()][uri] $ConfigUri
     static hidden [bool] $useverbose = $verbosePreference -eq "continue"
     static [System.Collections.ObjectModel.Collection[Byte[]]] $banners = @()
@@ -6522,7 +6715,7 @@ $prompt
     [void] SetTMPvariables() {
         # Sets default variables and stores them in $this::Tmp.vars
         # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
-        if ($null -eq [CipherTron]::Tmp) { [CipherTron]::Tmp = [chatTmp]::new() }
+        if ($null -eq [CipherTron]::Tmp) { [CipherTron]::Tmp = [SessionTmp]::new() }
         if ($null -eq $this.Config) { $this.SetConfigs() }
         [CipherTron]::Tmp.vars.Set(@{
                 Query             = ''
@@ -6688,7 +6881,7 @@ $prompt
         $default_Config.UsageHelp += "`n`nPreset Commands:`n"; $commands = $this.Get_default_Commands()
         $default_Config.UsageHelp += $($commands.Keys.ForEach({ [PSCustomObject]@{ Command = $_; Aliases = $commands[$_][1]; Description = $commands[$_][2] } }) | Out-String).Replace("{", '(').Replace("}", ')')
         $default_Config.File = [CipherTron]::GetUnResolvedPath([IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $default_Config.FileName))
-        $l = [GitHub]::ParseGistUri([uri]::New($default_Config.GistUri)); [GitHub]::user = [User]::new($l.UserName)
+        $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
         Write-Host "[CipherTron] Get Remote gist uri for config ..." -ForegroundColor Blue
         $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$($default_Config.FileName)".raw_url)
         Write-Host "[CipherTron] Get Remote gist uri Complete" -ForegroundColor Blue
@@ -7048,10 +7241,10 @@ class ChatLog : System.Runtime.Serialization.ISerializable {
         return $Chat_String
     }
 }
-class chatTmp {
+class SessionTmp {
     [ValidateNotNull()][Config]$vars
     [ValidateNotNull()][System.Collections.Generic.List[string]]$Paths
-    chatTmp() {
+    SessionTmp() {
         $this.vars = [Config]::new()
         $this.Paths = [System.Collections.Generic.List[string]]::new()
     }
