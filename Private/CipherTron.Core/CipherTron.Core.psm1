@@ -963,15 +963,14 @@ class xconvert : System.ComponentModel.TypeConverter {
     static [string] StringFromBinStR ([string]$BinStR) {
         return [xconvert]::BinaryToString([xconvert]::BinaryFromBinStR($BinStR))
     }
-    static [string] BytesToRnStr([byte[]]$Inpbytes) {
-        $rn = [System.Random]::new(); # Hides Byte Array in a random String
-        $St = [string]::Join('', $($Inpbytes | ForEach-Object { [string][char]$rn.Next(97, 122) + $_ }));
-        return $St
+    static [string] ToObfuscated([string]$inputString) {
+        $Inpbytes = [System.Text.Encoding]::UTF8.GetBytes($inputString); $rn = [System.Random]::new(); # Hides Byte Array in a random String
+        return [string]::Join('', $($Inpbytes | ForEach-Object { [string][char]$rn.Next(97, 122) + $_ }));
     }
-    static [byte[]] BytesFromRnStr ([string]$rnString) {
+    static [string] ToDeObfuscated([string]$obfuscatedString) {
         $az = [int[]](97..122) | ForEach-Object { [string][char]$_ };
-        $by = [byte[]][string]::Concat($(($rnString.ToCharArray() | ForEach-Object { if ($_ -in $az) { [string][char]32 } else { [string]$_ } }) | ForEach-Object { $_ })).Trim().split([string][char]32);
-        return $by
+        $outbytes = [byte[]][string]::Concat($(($obfuscatedString.ToCharArray() | ForEach-Object { if ($_ -in $az) { [string][char]32 } else { [string]$_ } }) | ForEach-Object { $_ })).Trim().split([string][char]32);
+        return [System.Text.Encoding]::UTF8.GetString($outbytes)
     }
     [PSCustomObject[]] static ToPSObject([xml]$XML) {
         $Out = @(); foreach ($Object in @($XML.Objects.Object)) {
@@ -1900,8 +1899,8 @@ class GistFile {
     [int]$size
     [GistFile[]]$files
     hidden [string]$content
-    static hidden [string]$UserName
-    static hidden [PsObject]$ChildItems
+    static [string]$UserName
+    static [PsObject]$ChildItems
     GistFile([string]$filename) {
         $this.Name = $filename
     }
@@ -1922,15 +1921,12 @@ class GistFile {
             }
         }
         if ($null -eq ([GistFile]::ChildItems) -and ![string]::IsNullOrWhiteSpace($this.Id)) {
-            Write-Verbose "[-] Get [GistFile]::ChildItems ..."
             [GistFile]::ChildItems = [GitHub]::GetGist($this.Owner, $this.Id).files
-            Write-Verbose "    Done."
         }
         if ($null -ne [GistFile]::ChildItems) {
             $_files = $null; [string[]]$filenames = [GistFile]::ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
             try {
                 $_files = [GistFile[]]$filenames.Foreach({
-                        Write-Verbose "[-] Creating gist: $_ ...."
                         $_Item = [GistFile]::ChildItems."$_"
                         $_Gist = [GistFile]::new($_Item.filename)
                         $_Gist.language = $_Item.language
@@ -1941,7 +1937,6 @@ class GistFile {
                         $_Gist.content = $_Item.content
                         $_Gist.Owner = $this.Owner; $_Gist.Id = $this.Id
                         $_Gist
-                        Write-Verbose "    Done."
                     }
                 )
             } finally {
@@ -1951,7 +1946,6 @@ class GistFile {
                     $this.Name = $filenames[0]
                 }
             }
-            Write-Verbose "   Completed."
         }
     }
     static [GistFile] Create([uri]$GistUri) {
@@ -2340,11 +2334,11 @@ class ArgonCage : CryptoBase {
                 Users            = @{}
                 Host_Os          = [ArgonCage]::Get_Host_Os()
                 ExitCode         = 0
-                Quick_Exit       = $this.Config.Quick_Exit  #ie: if true, then no Questions asked, Just closes the damn thing.
                 OfflineMode      = $this.IsOffline
+                SessionId        = ''
+                SessionConfig    = $this.Config
                 Finish_reason    = ''
                 OgWindowTitle    = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
-                CurrentsessionId = ''
                 WhatIf_IsPresent = [bool]$((Get-Variable WhatIfPreference).Value.IsPresent)
             }
         )
@@ -2353,17 +2347,17 @@ class ArgonCage : CryptoBase {
         $Config_FileName = 'Config.enc'
         $default_DataDir = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
         $default_Config = @{
-            Remote         = ''
-            FileName       = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
-            File           = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine((Split-Path -Path $default_DataDir.FullName), $Config_FileName))
-            GistUri        = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
-            ERROR_NAMES    = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
-            NoApiKeyHelp   = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
-            ThrowNoApiKey  = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
-            UsageHelp      = "Usage:`nHere's an example of how to use this Password manager:`n   `$pm = [ArgonCage]::new()`n   `$pm.login()`n`nAnd make sure you have Internet."
-            CacheCreds     = $true
-            CredsCachePath = [IO.Path]::Combine($default_DataDir.FullName, "CachedCreds" , "CredsCache.enc")
-            LastWriteTime  = [datetime]::Now
+            Remote          = ''
+            FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
+            File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine((Split-Path -Path $default_DataDir.FullName), $Config_FileName))
+            GistUri         = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
+            ERROR_NAMES     = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
+            NoApiKeyHelp    = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
+            ThrowNoApiKey   = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
+            UsageHelp       = "Usage:`nHere's an example of how to use this Password manager:`n   `$pm = [ArgonCage]::new()`n   `$pm.login()`n`nAnd make sure you have Internet."
+            CacheCreds      = $true
+            CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "CachedCreds" , "CredsCache.enc")
+            LastWriteTime   = [datetime]::Now
         }
         $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
         Write-Host "[ArgonCage] Get Remote gist uri for config ..." -ForegroundColor Blue
@@ -2513,8 +2507,56 @@ class ArgonCage : CryptoBase {
         return [ArgonCage]::ReadRecords([ArgonCage]::records.File)
     }
     static [PsObject] ReadRecords([String]$Path) {
-        $password = [AesGCM]::GetPassword("[ArgonCage] password to read records")
+        $tk_name = 'recordsRW'; $password = [AesGCM]::GetPassword("[ArgonCage] password to read records")
+        $sc = [ArgonCage]::Tmp.vars.SessionConfig
+        if ($sc.CacheCreds) {
+            @{ $tk_name = [hkdF2]::GetToken($password) } | ConvertTo-Json | Out-File $sc.CachedCredsPath -Encoding utf8BOM
+        }
         return [ArgonCage]::ReadRecords($Path, $password, [string]::Empty)
+    }
+    static [config[]] ReadCredsCache() {
+        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) {
+            throw "No session detected! ie: [ArgonCage]::new() should run first"
+        }
+        $sc = [ArgonCage]::Tmp.vars.SessionConfig
+        if (!$sc.CacheCreds) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('CacheCreds', `$true)" }
+        return [ArgonCage]::ReadCredsCache($sc.CachedCredsPath)
+    }
+    static [config[]] ReadCredsCache([string]$FilePath) {
+        $credspath = $FilePath | Split-Path
+        if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
+        $ca = @(); if ([IO.File]::Exists($FilePath)) {
+            $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
+            $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($FilePath)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1)
+            $(ConvertFrom-Csv ([System.Text.Encoding]::UTF8.GetString($da).Split(" "))).ForEach({ $ca += [config]::new([xconvert]::ToOrdered($_)) })
+        }
+        return $ca
+    }
+    static [config[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName) {
+        return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName)
+    }
+    static [config[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName) {
+        [ValidateNotNullOrWhiteSpace()][string]$TagName = $TagName
+        [ValidateNotNullOrEmpty()][pscredential]$Credential = $Credential
+        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
+        $results = [ArgonCage]::ReadCredsCache()
+        if ($results.Count -gt 0) {
+            if ($TagName -in $results.Tag) {
+                Write-Warning "TagName: $TagName was already set!"
+                $results.Where({ $_.Tag -eq $TagName }).Set('Token', [hkdF2]::GetToken($Credential.Password))
+            }
+        } else {
+            $results += [config]::new(@{
+                    User  = $Credential.UserName
+                    Tag   = $TagName
+                    Token = [hkdF2]::GetToken($Credential.Password)
+                }
+            )
+        }
+        $encodedCache = [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($results | ConvertTo-Csv)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1))
+        Set-Content -Value $encodedCache -Path ([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath) -Encoding utf8BOM
+        return $results
     }
     static [PsObject] ReadRecords([String]$Path, [securestring]$password, [string]$Compression) {
         [ValidateNotNullOrEmpty()][string]$Path = [ArgonCage]::GetResolvedPath($Path)
