@@ -1771,7 +1771,7 @@ class GitHub {
                 }
             )
         }
-        if (![GitHub]::IsConnected()) {
+        if (!((Test-Connection github.com -Count 1).status -eq "Success")) {
             throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
         }
         if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
@@ -2213,7 +2213,7 @@ class ArgonCage : CryptoBase {
         $this.Version = [ArgonCage]::GetVersion()
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ return [ArgonCage]::Get_dataPath('ArgonCage', 'Data') })))
         $this.SetTMPvariables(); $this.SaveConfigs() # $this.ImportConfigs()
-        $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ [NetworkManager]::caller = '[ArgonCage]'; return ![NetworkManager]::TestConnection('github.com') })))
+        $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
     }
     static [void] ShowMenu() {
         [ArgonCage]::ResolveRecords()
@@ -2514,6 +2514,15 @@ class ArgonCage : CryptoBase {
         }
         return [ArgonCage]::ReadRecords($Path, $password, [string]::Empty)
     }
+    static [void] SaveCredsCache([config[]]$cacheOb) {
+        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
+        Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
+                    [System.Text.Encoding]::UTF8.GetBytes([string]($cacheOb | ConvertTo-Csv)),
+                    $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1
+                )
+            )
+        ) -Path ([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath) -Encoding utf8BOM
+    }
     static [config[]] ReadCredsCache() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         if ($null -eq [ArgonCage]::Tmp.vars.SessionId) {
@@ -2539,23 +2548,23 @@ class ArgonCage : CryptoBase {
     static [config[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName) {
         [ValidateNotNullOrWhiteSpace()][string]$TagName = $TagName
         [ValidateNotNullOrEmpty()][pscredential]$Credential = $Credential
-        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
         $results = [ArgonCage]::ReadCredsCache()
-        if ($results.Count -gt 0) {
-            if ($TagName -in $results.Tag) {
-                Write-Warning "TagName: $TagName was already set!"
-                $results.Where({ $_.Tag -eq $TagName }).Set('Token', [hkdF2]::GetToken($Credential.Password))
-            }
-        } else {
+        if ($results.Count -eq 0) {
             $results += [config]::new(@{
                     User  = $Credential.UserName
                     Tag   = $TagName
                     Token = [hkdF2]::GetToken($Credential.Password)
                 }
             )
+            [ArgonCage]::SaveCredsCache($results)
+            return $results
+        } else {
+            if ($TagName -notin $results.Tag) {
+                throw "Tag '$TagName' not found in cache"
+            }
+            $results.Where({ $_.Tag -eq $TagName }).Set('Token', [hkdF2]::GetToken($Credential.Password))
+            [ArgonCage]::SaveCredsCache($results)
         }
-        $encodedCache = [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($results | ConvertTo-Csv)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1))
-        Set-Content -Value $encodedCache -Path ([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath) -Encoding utf8BOM
         return $results
     }
     static [PsObject] ReadRecords([String]$Path, [securestring]$password, [string]$Compression) {
