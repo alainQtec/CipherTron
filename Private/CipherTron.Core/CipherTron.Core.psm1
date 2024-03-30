@@ -2154,19 +2154,19 @@ class FileMonitor {
     }
 }
 
-class Argrecord {
-    [uri]$Url
+class SecretStore {
     [string]$Name
+    [uri]$Url
     static hidden [string]$DataPath = [cryptobase]::Get_dataPath('ArgonCage', 'records')
 
-    Argrecord([string]$Name) {
+    SecretStore([string]$Name) {
         $this.Name = $Name
         $this.psobject.Properties.Add([psscriptproperty]::new('File', {
-                    return [IO.FileInfo]::new([IO.Path]::Combine([Argrecord]::DataPath, $this.Name))
+                    return [IO.FileInfo]::new([IO.Path]::Combine([SecretStore]::DataPath, $this.Name))
                 }, {
                     param($value)
                     if ($value -is [IO.FileInfo]) {
-                        [Argrecord]::DataPath = $value.Directory.FullName
+                        [SecretStore]::DataPath = $value.Directory.FullName
                         $this.Name = $value.Name
                     } else {
                         throw "Invalid value assigned to File property"
@@ -2204,7 +2204,7 @@ class ArgonCage : CryptoBase {
     [ValidateNotNullOrEmpty()][Config] $Config
     [ValidateNotNullOrEmpty()][version] $Version
     static hidden [ValidateNotNull()][SessionTmp] $Tmp
-    static [Argrecord] $records = [Argrecord]::new("secret_Info")
+    static [SecretStore] $SecretStore = [SecretStore]::new("secret_Info")
     static [bool] $useverbose = $verbosePreference -eq "continue"
     static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
@@ -2216,7 +2216,7 @@ class ArgonCage : CryptoBase {
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
     }
     static [void] ShowMenu() {
-        [ArgonCage]::ResolveRecords()
+        [ArgonCage]::GetSecretStore()
         [ArgonCage]::WriteBanner()
         # code for menu goes here ...
     }
@@ -2499,23 +2499,26 @@ class ArgonCage : CryptoBase {
         $connection.Close()
         return $Passw0rdHash
     }
-    static [Argrecord] ResolveRecords() {
-        return [ArgonCage]::ResolveRecords([ArgonCage]::records.Name)
+    static [SecretStore] GetSecretStore() {
+        if ($null -eq [ArgonCage]::SecretStore.Url) {
+            return [ArgonCage]::GetSecretStore([ArgonCage]::SecretStore.Name)
+        }
+        return [ArgonCage]::SecretStore
     }
-    static [Argrecord] ResolveRecords([string]$FileName) {
-        if ([ArgonCage]::useverbose) { "[+] Resolve records ..." | Write-Host -ForegroundColor Magenta }
-        $result = [Argrecord]::new($FileName); $__FilePath = [ArgonCage]::GetUnResolvedPath($FileName)
+    static [SecretStore] GetSecretStore([string]$FileName) {
+        if ([ArgonCage]::useverbose) { "[+] Resolve secrets ..." | Write-Host -ForegroundColor Magenta }
+        $result = [SecretStore]::new($FileName); $__FilePath = [ArgonCage]::GetUnResolvedPath($FileName)
         $result.File = $(if ([IO.File]::Exists($__FilePath)) {
-                Write-Host "    records file '$([IO.Path]::GetFileName($__FilePath))' already exists." -ForegroundColor Green
+                Write-Host "    secrets file '$([IO.Path]::GetFileName($__FilePath))' already exists." -ForegroundColor Green
                 Get-Item $__FilePath
             } else {
-                [ArgonCage]::records.File
+                [ArgonCage]::SecretStore.File
             }
         )
         $result.Name = [IO.Path]::GetFileName($result.File.FullName)
-        $result.Url = $(if ($null -eq [ArgonCage]::records.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::records.Name).raw_url) } else { [ArgonCage]::records.Url })
+        $result.Url = $(if ($null -eq [ArgonCage]::SecretStore.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::SecretStore.Name).raw_url) } else { [ArgonCage]::SecretStore.Url })
         if (![IO.File]::Exists($result.File.FullName)) {
-            if ([ArgonCage]::useverbose) { "[+] Download records .." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::useverbose) { "[+] Download secrets .." | Write-Host -ForegroundColor Magenta }
             $result.File = [NetworkManager]::DownloadFile($result.Url, $result.File.FullName)
             [Console]::Write([Environment]::NewLine)
         }
@@ -2561,29 +2564,29 @@ class ArgonCage : CryptoBase {
         $results = [ArgonCage]::ReadCredsCache()
         $IsNewTag = $TagName -notin $results.Tag
         if ($IsNewTag -and !$Force) {
-            Throw [System.InvalidOperationException]::new("CACHE_TAG_NOT_FOUND! Please make sure the tag already exist, or use -Force to auto add.")
+            Throw [System.InvalidOperationException]::new("CACHE_NOT_FOUND! Please make sure the tag already exist, or use -Force to auto add.")
         }
         Write-Verbose "$(if ($IsNewTag) { "Adding new" } else { "Updating" }) tag: '$TagName' ..."
         if ($results.Count -eq 0 -or $IsNewTag) {
             $results += [config]::new(@{
                     User  = $Credential.UserName
                     Tag   = $TagName
-                    Token = [hkdF2]::GetToken($Credential.Password)
+                    Token = [HKDF2]::GetToken($Credential.Password)
                 }
             )
         } else {
-            $results.Where({ $_.Tag -eq $TagName }).Set('Token', [hkdF2]::GetToken($Credential.Password))
+            $results.Where({ $_.Tag -eq $TagName }).Set('Token', [HKDF2]::GetToken($Credential.Password))
         }
         [ArgonCage]::SaveCredsCache($results)
         return $results
     }
     static [PsObject] ReadRecords() {
-        if (![IO.File]::Exists([ArgonCage]::records.File) -or ($null -eq [ArgonCage]::records.Url)) { [ArgonCage]::records = [ArgonCage]::ResolveRecords() }
-        return [ArgonCage]::ReadRecords([ArgonCage]::records.File)
+        if (![IO.File]::Exists([ArgonCage]::SecretStore.File) -or ($null -eq [ArgonCage]::SecretStore.Url)) { [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore() }
+        return [ArgonCage]::ReadRecords([ArgonCage]::SecretStore.File)
     }
     static [PsObject] ReadRecords([String]$Path) {
         # $CachedCreds = [ArgonCage]::ReadCredsCache(); $TagIsCached = $CachedCreds.Tag -contains $TagName
-        $password = [AesGCM]::GetPassword("[ArgonCage] password to read records")
+        $password = [AesGCM]::GetPassword("[ArgonCage] password to read secrets")
         return [ArgonCage]::ReadRecords($Path, $password, [string]::Empty)
     }
     static [PsObject] ReadRecords([String]$Path, [securestring]$password, [string]$Compression) {
@@ -2595,14 +2598,14 @@ class ArgonCage : CryptoBase {
         return $(ConvertFrom-Csv ([System.Text.Encoding]::UTF8.GetString($da).Split('" "'))) | Select-Object -Property @{ l = 'link'; e = { if ($_.link.Contains('"')) { $_.link.replace('"', '') } else { $_.link } } }, 'user', 'pass'
     }
     static [void] EditRecords() {
-        if (![IO.File]::Exists([ArgonCage]::records.File.FullName) -or ($null -eq [ArgonCage]::records.Url)) { [ArgonCage]::records = [ArgonCage]::ResolveRecords() }
-        [ArgonCage]::EditRecords([ArgonCage]::records.File.FullName)
+        if (![IO.File]::Exists([ArgonCage]::SecretStore.File.FullName) -or ($null -eq [ArgonCage]::SecretStore.Url)) { [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore() }
+        [ArgonCage]::EditRecords([ArgonCage]::SecretStore.File.FullName)
     }
     static [void] EditRecords([String]$Path) {
         $private:records = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
             [NetworkManager]::blockAllOutbound()
-            if ([ArgonCage]::useverbose) { "[+] Edit records .." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::useverbose) { "[+] Edit secrets .." | Write-Host -ForegroundColor Magenta }
             [ArgonCage]::ReadRecords($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
             $process = [System.Diagnostics.Process]::new()
@@ -2632,11 +2635,11 @@ class ArgonCage : CryptoBase {
         }
     }
     static [void] SaveRecords([psObject]$InputObject, [string]$outFile) {
-        $password = [AesGCM]::GetPassword("[ArgonCage] password to save records")
+        $password = [AesGCM]::GetPassword("[ArgonCage] password to save secrets")
         [ArgonCage]::SaveRecords($InputObject, [ArgonCage]::GetUnResolvedPath($outFile), $password, '')
     }
     static [void] SaveRecords([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        if ([ArgonCage]::useverbose) { "[+] Saving records .." | Write-Host -ForegroundColor Magenta }
+        if ([ArgonCage]::useverbose) { "[+] Saving secrets .." | Write-Host -ForegroundColor Magenta }
         if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
         [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }
@@ -4630,7 +4633,7 @@ class AesGCM : CryptoBase {
 # .SYNOPSIS
 #     A custom System.Security.Cryptography.AesCng class, for more control on hashing, compression & other stuff.
 # .DESCRIPTION
-#     A symmetric-key encryption algorithm that is used to protect a variety of sensitive data, including financial transactions, medical records, and government communications.
+#     A symmetric-key encryption algorithm that is used to protect a variety of sensitive data, including financial transactions and government communications.
 #     It is considered to be very secure, and has been adopted as a standard by many governments and organizations around the world.
 #
 #     Just as [System.Security.Cryptography.AesCng], by default this class CBC ciphermode, PKCS7 padding, and 256b key & SHA1 to hash (since it has been proven to be more secure than MD5).
