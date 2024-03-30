@@ -2502,22 +2502,29 @@ class ArgonCage : CryptoBase {
     static [Argrecord] ResolveRecords() {
         return [ArgonCage]::ResolveRecords([ArgonCage]::records.Name)
     }
-    static [PsObject] ReadRecords() {
-        if (![IO.File]::Exists([ArgonCage]::records.File) -or ($null -eq [ArgonCage]::records.Url)) { [ArgonCage]::records = [ArgonCage]::ResolveRecords() }
-        return [ArgonCage]::ReadRecords([ArgonCage]::records.File)
-    }
-    static [PsObject] ReadRecords([String]$Path) {
-        $tk_name = 'recordsRW'; $password = [AesGCM]::GetPassword("[ArgonCage] password to read records")
-        $sc = [ArgonCage]::Tmp.vars.SessionConfig
-        if ($sc.CacheCreds) {
-            @{ $tk_name = [hkdF2]::GetToken($password) } | ConvertTo-Json | Out-File $sc.CachedCredsPath -Encoding utf8BOM
+    static [Argrecord] ResolveRecords([string]$FileName) {
+        if ([ArgonCage]::useverbose) { "[+] Resolve records ..." | Write-Host -ForegroundColor Magenta }
+        $result = [Argrecord]::new($FileName); $__FilePath = [ArgonCage]::GetUnResolvedPath($FileName)
+        $result.File = $(if ([IO.File]::Exists($__FilePath)) {
+                Write-Host "    records file '$([IO.Path]::GetFileName($__FilePath))' already exists." -ForegroundColor Green
+                Get-Item $__FilePath
+            } else {
+                [ArgonCage]::records.File
+            }
+        )
+        $result.Name = [IO.Path]::GetFileName($result.File.FullName)
+        $result.Url = $(if ($null -eq [ArgonCage]::records.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::records.Name).raw_url) } else { [ArgonCage]::records.Url })
+        if (![IO.File]::Exists($result.File.FullName)) {
+            if ([ArgonCage]::useverbose) { "[+] Download records .." | Write-Host -ForegroundColor Magenta }
+            $result.File = [NetworkManager]::DownloadFile($result.Url, $result.File.FullName)
+            [Console]::Write([Environment]::NewLine)
         }
-        return [ArgonCage]::ReadRecords($Path, $password, [string]::Empty)
+        return $result
     }
     static [void] SaveCredsCache([config[]]$cacheOb) {
         $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
         Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
-                    [System.Text.Encoding]::UTF8.GetBytes([string]($cacheOb | ConvertTo-Csv)),
+                    [System.Text.Encoding]::UTF8.GetBytes([string]($cacheOb | ConvertTo-Json)),
                     $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1
                 )
             )
@@ -2538,40 +2545,53 @@ class ArgonCage : CryptoBase {
         $ca = @(); if ([IO.File]::Exists($FilePath)) {
             $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
             $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($FilePath)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1)
-            $(ConvertFrom-Csv ([System.Text.Encoding]::UTF8.GetString($da).Split(" "))).ForEach({ $ca += [config]::new([xconvert]::ToOrdered($_)) })
+            ([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [config]::new([xconvert]::ToOrdered($_)) })
         }
         return $ca
     }
     static [config[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName) {
-        return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName)
+        return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $false)
     }
-    static [config[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName) {
+    static [config[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName, [bool]$Force) {
+        return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $Force)
+    }
+    static [config[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName, [bool]$Force) {
         [ValidateNotNullOrWhiteSpace()][string]$TagName = $TagName
         [ValidateNotNullOrEmpty()][pscredential]$Credential = $Credential
         $results = [ArgonCage]::ReadCredsCache()
-        if ($results.Count -eq 0) {
+        $IsNewTag = $TagName -notin $results.Tag
+        if ($IsNewTag -and !$Force) {
+            Throw [System.InvalidOperationException]::new("CACHE_TAG_NOT_FOUND! Please make sure the tag already exist, or use -Force to auto add.")
+        }
+        Write-Verbose "$(if ($IsNewTag) { "Adding new" } else { "Updating" }) tag: '$TagName' ..."
+        if ($results.Count -eq 0 -or $IsNewTag) {
             $results += [config]::new(@{
                     User  = $Credential.UserName
                     Tag   = $TagName
                     Token = [hkdF2]::GetToken($Credential.Password)
                 }
             )
-            [ArgonCage]::SaveCredsCache($results)
-            return $results
         } else {
-            if ($TagName -notin $results.Tag) {
-                throw "Tag '$TagName' not found in cache"
-            }
             $results.Where({ $_.Tag -eq $TagName }).Set('Token', [hkdF2]::GetToken($Credential.Password))
-            [ArgonCage]::SaveCredsCache($results)
         }
+        [ArgonCage]::SaveCredsCache($results)
         return $results
+    }
+    static [PsObject] ReadRecords() {
+        if (![IO.File]::Exists([ArgonCage]::records.File) -or ($null -eq [ArgonCage]::records.Url)) { [ArgonCage]::records = [ArgonCage]::ResolveRecords() }
+        return [ArgonCage]::ReadRecords([ArgonCage]::records.File)
+    }
+    static [PsObject] ReadRecords([String]$Path) {
+        # $CachedCreds = [ArgonCage]::ReadCredsCache(); $TagIsCached = $CachedCreds.Tag -contains $TagName
+        $password = [AesGCM]::GetPassword("[ArgonCage] password to read records")
+        return [ArgonCage]::ReadRecords($Path, $password, [string]::Empty)
     }
     static [PsObject] ReadRecords([String]$Path, [securestring]$password, [string]$Compression) {
         [ValidateNotNullOrEmpty()][string]$Path = [ArgonCage]::GetResolvedPath($Path)
         if (![IO.File]::Exists($Path)) { throw [System.IO.FileNotFoundException]::new("File '$path' does not exist") }
         if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
         $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
+        $TagName = 'recordsRW'; if ([ArgonCage]::Tmp.vars.SessionConfig.CacheCreds) { [ArgonCage]::updateCredsCache((whoami), $password, $TagName, $true) }
         return $(ConvertFrom-Csv ([System.Text.Encoding]::UTF8.GetString($da).Split('" "'))) | Select-Object -Property @{ l = 'link'; e = { if ($_.link.Contains('"')) { $_.link.replace('"', '') } else { $_.link } } }, 'user', 'pass'
     }
     static [void] EditRecords() {
@@ -2619,25 +2639,6 @@ class ArgonCage : CryptoBase {
         if ([ArgonCage]::useverbose) { "[+] Saving records .." | Write-Host -ForegroundColor Magenta }
         if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
         [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
-    }
-    static [Argrecord] ResolveRecords([string]$FileName) {
-        if ([ArgonCage]::useverbose) { "[+] Resolve records ..." | Write-Host -ForegroundColor Magenta }
-        $result = [Argrecord]::new($FileName); $__FilePath = [ArgonCage]::GetUnResolvedPath($FileName)
-        $result.File = $(if ([IO.File]::Exists($__FilePath)) {
-                Write-Host "    records file '$([IO.Path]::GetFileName($__FilePath))' already exists." -ForegroundColor Green
-                Get-Item $__FilePath
-            } else {
-                [ArgonCage]::records.File
-            }
-        )
-        $result.Name = [IO.Path]::GetFileName($result.File.FullName)
-        $result.Url = $(if ($null -eq [ArgonCage]::records.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::records.Name).raw_url) } else { [ArgonCage]::records.Url })
-        if (![IO.File]::Exists($result.File.FullName)) {
-            if ([ArgonCage]::useverbose) { "[+] Download records .." | Write-Host -ForegroundColor Magenta }
-            $result.File = [NetworkManager]::DownloadFile($result.Url, $result.File.FullName)
-            [Console]::Write([Environment]::NewLine)
-        }
-        return $result
     }
     static [ConsoleKeyInfo] ReadInput() {
         $originalTreatControlCAsInput = [System.Console]::TreatControlCAsInput
@@ -7729,8 +7730,8 @@ class Config {
     [void] Set([System.Collections.Specialized.OrderedDictionary]$dict) {
         $dict.Keys.Foreach({ $this.Set($_, $dict["$_"]) });
     }
-    [bool] HasNoteProperty([string]$Name) {
-        [ValidateNotNullOrEmpty()][string]$Name = $Name
+    [bool] HasNoteProperty([object]$Name) {
+        [ValidateNotNullOrEmpty()][string]$Name = $($Name -as 'string')
         return (($this | Get-Member -Type NoteProperty | Select-Object -ExpandProperty name) -contains "$Name")
     }
     [array] ToArray() {
