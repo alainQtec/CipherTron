@@ -2501,15 +2501,14 @@ class ArgonCage : CryptoBase {
     }
     static [SecretStore] GetSecretStore() {
         if ($null -eq [ArgonCage]::SecretStore.Url) {
-            return [ArgonCage]::GetSecretStore([ArgonCage]::SecretStore.Name)
+            [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore([ArgonCage]::SecretStore.Name)
         }
         return [ArgonCage]::SecretStore
     }
     static [SecretStore] GetSecretStore([string]$FileName) {
-        if ([ArgonCage]::useverbose) { "[+] Resolve secrets ..." | Write-Host -ForegroundColor Magenta }
         $result = [SecretStore]::new($FileName); $__FilePath = [ArgonCage]::GetUnResolvedPath($FileName)
         $result.File = $(if ([IO.File]::Exists($__FilePath)) {
-                Write-Host "    secrets file '$([IO.Path]::GetFileName($__FilePath))' already exists." -ForegroundColor Green
+                Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -ForegroundColor Green
                 Get-Item $__FilePath
             } else {
                 [ArgonCage]::SecretStore.File
@@ -2518,7 +2517,7 @@ class ArgonCage : CryptoBase {
         $result.Name = [IO.Path]::GetFileName($result.File.FullName)
         $result.Url = $(if ($null -eq [ArgonCage]::SecretStore.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::SecretStore.Name).raw_url) } else { [ArgonCage]::SecretStore.Url })
         if (![IO.File]::Exists($result.File.FullName)) {
-            if ([ArgonCage]::useverbose) { "[+] Download secrets .." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::useverbose) { "[+] Fetch secrets .." | Write-Host -ForegroundColor Magenta }
             $result.File = [NetworkManager]::DownloadFile($result.Url, $result.File.FullName)
             [Console]::Write([Environment]::NewLine)
         }
