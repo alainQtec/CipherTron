@@ -739,8 +739,8 @@ class CryptoBase {
 }
 #endregion CryptoBase
 
-class ConfigBase {
-    ConfigBase() {}
+class RecordBase {
+    RecordBase() {}
     [void] Add([string]$key, [System.Object]$value) {
         [ValidateNotNullOrEmpty()][string]$key = $key
         if (!$this.HasNoteProperty($key)) {
@@ -812,8 +812,8 @@ class ConfigBase {
         try {
             [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
             if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
-            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [Config]::caller }
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordTbl]::caller }
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode([IO.File]::ReadAllText($FilePath)), $pass)))
             $cfg = [hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } })
         } catch {
@@ -1351,7 +1351,7 @@ class xconvert : System.ComponentModel.TypeConverter {
         if ([string]::IsNullOrEmpty($LiteralText)) { $LiteralText = [string]::Empty }
         return [regex]::Escape($LiteralText);
     }
-    [System.Collections.Hashtable] static FromRegexCapture([System.Text.RegularExpressions.Match]$Match, [regex]$Regex) {
+    static [System.Collections.Hashtable] FromRegexCapture([System.Text.RegularExpressions.Match]$Match, [regex]$Regex) {
         if (!$Match.Groups[0].Success) {
             throw New-Object System.ArgumentException('Match does not contain any captures.', 'Match')
         }
@@ -1363,6 +1363,12 @@ class xconvert : System.ComponentModel.TypeConverter {
             $h.$name = $Match.Groups[$name].Value
         }
         return $h
+    }
+    static [System.Collections.Hashtable] ToHashTable([PsObject]$object) {
+        $ht = @{}; foreach ($property in $object.PsObject.Properties) {
+            $ht[$property.Name] = $property.Value
+        }
+        return $ht
     }
     static hidden [string] IntToString([Int]$value, [char[]]$baseChars) {
         [int]$i = 32;
@@ -2297,22 +2303,6 @@ class SecretStore {
         )
     }
 }
-class ArgRecord : ConfigBase {
-    Config([hashtable[]]$array) {
-        $this.Add($array)
-        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 1 })))
-    }
-    ArgRecord([PSCustomObject]$rec) {
-        $this.Add([ArgRecord]::ParseObject($rec))
-        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 1 })))
-    }
-    static [hashtable] ParseObject([PSCustomObject]$object) {
-        $ht = @{}; foreach ($property in $object.PsObject.Properties) {
-            $ht[$property.Name] = $property.Value
-        }
-        return $ht
-    }
-}
 #region    PasswordManager
 # .SYNOPSIS
 #     A simple cli tool that uses state-of-the-art encryption to save secrets.
@@ -2328,7 +2318,7 @@ class ArgRecord : ConfigBase {
 #     [ArgonCage]::New()
 #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
 class ArgonCage : CryptoBase {
-    [ValidateNotNullOrEmpty()][Config] $Config
+    [ValidateNotNullOrEmpty()][RecordTbl] $Config
     [ValidateNotNullOrEmpty()][version] $Version
     static hidden [ValidateNotNull()][SessionTmp] $Tmp
     static [SecretStore] $SecretStore = [SecretStore]::new("secret_Info")
@@ -2410,7 +2400,7 @@ class ArgonCage : CryptoBase {
         code $config_file
     }
     [void] SaveConfigs() {
-        [Config]::caller = "[$($this.GetType().Name)]"; $this.Config.Save()
+        [RecordTbl]::caller = "[$($this.GetType().Name)]"; $this.Config.Save()
     }
     [void] SyncConfigs() {
         # Imports remote configs into current ones, then uploads the updated version to github gist
@@ -2418,11 +2408,11 @@ class ArgonCage : CryptoBase {
         $this.ImportConfig($this.Config.Remote); $this.SaveConfigs()
     }
     [void] ImportConfigs() {
-        [Config]::caller = "[$($this.GetType().Name)]"; [void]$this.Config.Import($this.Config.File)
+        [RecordTbl]::caller = "[$($this.GetType().Name)]"; [void]$this.Config.Import($this.Config.File)
     }
     [void] ImportConfigs([uri]$raw_uri) {
         # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        [Config]::caller = "[$($this.GetType().Name)]"; $this.Config.Import($raw_uri)
+        [RecordTbl]::caller = "[$($this.GetType().Name)]"; $this.Config.Import($raw_uri)
     }
     [bool] DeleteConfigs() {
         return [bool]$(
@@ -2438,7 +2428,7 @@ class ArgonCage : CryptoBase {
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
         [AesGCM]::caller = "[$($this.GetType().Name)]"
-        if ($null -eq $this.Config) { $this.Config = [Config]::new([ArgonCage]::Get_default_Config()) }
+        if ($null -eq $this.Config) { $this.Config = [RecordTbl]::new([ArgonCage]::Get_default_Config()) }
         if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [ArgonCage]::GetUnResolvedPath($ConfigFile) }
         if (![IO.File]::Exists($this.Config.File)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
@@ -2653,7 +2643,7 @@ class ArgonCage : CryptoBase {
     static [void] ClearCredsCache() {
         [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
     }
-    static [ArgRecord[]] ReadCredsCache() {
+    static [RecordTbl[]] ReadCredsCache() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         if ($null -eq [ArgonCage]::Tmp.vars.SessionId) {
             throw "No session detected! ie: [ArgonCage]::new() should run first"
@@ -2662,22 +2652,22 @@ class ArgonCage : CryptoBase {
         if (!$sc.CacheCreds) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('CacheCreds', `$true)" }
         return [ArgonCage]::ReadCredsCache($sc.CachedCredsPath)
     }
-    static [ArgRecord[]] ReadCredsCache([string]$FilePath) {
+    static [RecordTbl[]] ReadCredsCache([string]$FilePath) {
         $credspath = $FilePath | Split-Path
         if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
         $ca = @(); if (![IO.File]::Exists($FilePath)) { Write-Verbose "No cached credentials found in '$FilePath'."; return $ca }
         $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
         $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($FilePath)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1)
-        $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [ArgRecord]::new($_) })
+        $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordTbl]::new([xconvert]::ToHashTable($_)) })
         return $ca
     }
-    static [ArgRecord[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName) {
+    static [RecordTbl[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName) {
         return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $false)
     }
-    static [ArgRecord[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName, [bool]$Force) {
+    static [RecordTbl[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName, [bool]$Force) {
         return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $Force)
     }
-    static [ArgRecord[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName, [bool]$Force) {
+    static [RecordTbl[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName, [bool]$Force) {
         [ValidateNotNullOrWhiteSpace()][string]$TagName = $TagName
         [ValidateNotNullOrEmpty()][pscredential]$Credential = $Credential
         $results = [ArgonCage]::ReadCredsCache()
@@ -2687,7 +2677,7 @@ class ArgonCage : CryptoBase {
         }
         Write-Verbose "$(if ($IsNewTag) { "Adding new" } else { "Updating" }) tag: '$TagName' ..."
         if ($results.Count -eq 0 -or $IsNewTag) {
-            $results += [ArgRecord]::new(@{
+            $results += [RecordTbl]::new(@{
                     User  = $Credential.UserName
                     Tag   = $TagName
                     Token = [HKDF2]::GetToken($Credential.Password)
@@ -2699,7 +2689,7 @@ class ArgonCage : CryptoBase {
         [ArgonCage]::SaveCredsCache($results)
         return $results
     }
-    static [void] SaveCredsCache([ArgRecord[]]$cacheOb) {
+    static [void] SaveCredsCache([RecordTbl[]]$cacheOb) {
         $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
         Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
                     [System.Text.Encoding]::UTF8.GetBytes([string]($cacheOb | ConvertTo-Json)),
@@ -6512,7 +6502,7 @@ class Decryptor {
 #
 #   $bot.ChatLog.ToString()
 class CipherTron : CryptoBase {
-    [ValidateNotNullOrEmpty()][Config] $Config
+    [ValidateNotNullOrEmpty()][RecordTbl] $Config
     [ValidateNotNullOrEmpty()][version] $Version
     [ValidateNotNullOrEmpty()][chatPresets] $Presets
     static [ValidateNotNullOrEmpty()][ChatSession] $ChatSession
@@ -6872,7 +6862,7 @@ $prompt
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
         [AesGCM]::caller = "[$($this.GetType().Name)]"
-        if ($null -eq $this.Config) { $this.Config = [Config]::new($this.Get_default_Config()) }
+        if ($null -eq $this.Config) { $this.Config = [RecordTbl]::new($this.Get_default_Config()) }
         if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [CipherTron]::GetUnResolvedPath($ConfigFile) }
         if (![IO.File]::Exists($this.Config.File)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
@@ -6967,7 +6957,7 @@ $prompt
                 0
             )
             if ($answer -eq 0) {
-                $Pass = $null; Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to encrypt apikey" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+                $Pass = $null; Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to encrypt apikey" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
                 $this.SaveApiKey($ApiKey, [CipherTron]::Tmp.vars.ApiKey_Path, $Pass)
                 [CipherTron]::Tmp.vars.Set('OfflineMode', $false)
             } elseif ($answer -eq 1) {
@@ -7007,7 +6997,7 @@ $prompt
         code $config_file
     }
     [void] SaveConfigs() {
-        [Config]::caller = "[$($this.GetType().Name)]"; $this.Config.Save()
+        [RecordTbl]::caller = "[$($this.GetType().Name)]"; $this.Config.Save()
     }
     [void] SyncConfigs() {
         # Imports remote configs into current ones, then uploads the updated version to github gist
@@ -7015,11 +7005,11 @@ $prompt
         $this.ImportConfig($this.Config.Remote); $this.SaveConfigs()
     }
     [void] ImportConfigs() {
-        [Config]::caller = "[$($this.GetType().Name)]"; [void]$this.Config.Import($this.Config.File)
+        [RecordTbl]::caller = "[$($this.GetType().Name)]"; [void]$this.Config.Import($this.Config.File)
     }
     [void] ImportConfigs([uri]$raw_uri) {
         # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        [Config]::caller = "[$($this.GetType().Name)]"; $this.Config.Import($raw_uri)
+        [RecordTbl]::caller = "[$($this.GetType().Name)]"; $this.Config.Import($raw_uri)
     }
     [bool] DeleteConfigs() {
         return [bool]$(
@@ -7425,14 +7415,14 @@ class ChatLog : System.Runtime.Serialization.ISerializable {
     }
 }
 class SessionTmp {
-    [ValidateNotNull()][Config]$vars
+    [ValidateNotNull()][RecordTbl]$vars
     [ValidateNotNull()][System.Collections.Generic.List[string]]$Paths
     SessionTmp() {
-        $this.vars = [Config]::new()
+        $this.vars = [RecordTbl]::new()
         $this.Paths = [System.Collections.Generic.List[string]]::new()
     }
     [void] Clear() {
-        $this.vars = [Config]::new()
+        $this.vars = [RecordTbl]::new()
         $this.Paths | ForEach-Object { Remove-Item "$_" -ErrorAction SilentlyContinue }; $this.Paths = [System.Collections.Generic.List[string]]::new()
     }
 }
@@ -7800,16 +7790,16 @@ class CommandLineParser {
         return [string]::Join('', ($name.Split('-') | ForEach-Object { $_.Substring(0, 1).ToUpper() + $_.Substring(1) }))
     }
 }
-class Config : ConfigBase {
-    static hidden [string] $caller = '[Config]'
+class RecordTbl : RecordBase {
+    static hidden [string] $caller = '[RecordTbl]'
     [uri] $Remote # usually a gist uri
     [string] $File
     [datetime] $LastWriteTime = [datetime]::Now
-    Config() {
+    RecordTbl() {
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
         $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
     }
-    Config([hashtable[]]$array) {
+    RecordTbl([hashtable[]]$array) {
         $this.Add($array)
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
         $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
@@ -7817,10 +7807,10 @@ class Config : ConfigBase {
     [void] Save() {
         $pass = $null;
         try {
-            Write-Host "$([Config]::caller) Save Config to file: $($this.File) ..."
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to encrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            Write-Host "$([RecordTbl]::caller) Save Config to file: $($this.File) ..."
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to encrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
-            Write-Host "$([Config]::caller) Save Config Complete"
+            Write-Host "$([RecordTbl]::caller) Save Config Complete"
         } catch {
             throw $_.Exeption
         } finally {
@@ -7829,8 +7819,8 @@ class Config : ConfigBase {
     }
     [void] Import([uri]$raw_uri) {
         try {
-            $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [Config]::caller }
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([Config]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordTbl]::caller }
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
             $this.Set([hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } }))
         } catch {
@@ -7840,9 +7830,9 @@ class Config : ConfigBase {
         }
     }
     [void] Import([String]$FilePath) {
-        Write-Host "$([Config]::caller) Import Config: $FilePath ..." -ForegroundColor Green
+        Write-Host "$([RecordTbl]::caller) Import Config: $FilePath ..." -ForegroundColor Green
         $this.Set($this.Read($FilePath))
-        Write-Host "$([Config]::caller) Import Config Complete" -ForegroundColor Green
+        Write-Host "$([RecordTbl]::caller) Import Config Complete" -ForegroundColor Green
     }
     [void] Upload() {
         if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [InvalidArgumentException]::new('remote') }
@@ -7852,7 +7842,7 @@ class Config : ConfigBase {
 }
 class User : System.Runtime.Serialization.ISerializable {
     [string]$Name
-    [ValidateNotNull()][Config]$preferences
+    [ValidateNotNull()][RecordTbl]$preferences
     hidden [ValidateNotNull()][string]$PublicKey
     hidden [ValidateNotNull()][securestring]$Password
     hidden [ValidateNotNull()][string]$PrivateKeyHash
@@ -7863,7 +7853,7 @@ class User : System.Runtime.Serialization.ISerializable {
             Quick_Exit   = $false
             Avatar_Emoji = '🗿'
         }
-        $this.preferences = [Config]::new($default_Preferences)
+        $this.preferences = [RecordTbl]::new($default_Preferences)
     }
     User([string]$name, [string]$passw0rd, [string]$publicKey, [securestring]$privateKey) {
         $this.Name = $name
@@ -7874,13 +7864,13 @@ class User : System.Runtime.Serialization.ISerializable {
             Quick_Exit   = $false
             Avatar_Emoji = '🗿'
         }
-        $this.preferences = [Config]::new($default_Preferences)
+        $this.preferences = [RecordTbl]::new($default_Preferences)
     }
     User([System.Runtime.Serialization.SerializationInfo]$Info, [System.Runtime.Serialization.StreamingContext]$Context) {
         $this.Name = $Info.GetValue('Name', [string])
         $this.Password = $Info.GetValue('Password', [securestring])
         $this.PublicKey = $Info.GetValue('PublicKey', [string])
-        $this.preferences = $Info.GetValue('preferences', [Config])
+        $this.preferences = $Info.GetValue('preferences', [RecordTbl])
         $this.PrivateKeyHash = $Info.GetValue('PrivateKeyHash', [string])
     }
     [void] GetObjectData([System.Runtime.Serialization.SerializationInfo]$Info, [System.Runtime.Serialization.StreamingContext]$Context) {
