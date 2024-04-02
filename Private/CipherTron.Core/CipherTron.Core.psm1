@@ -254,7 +254,12 @@ class ProgressUtil {
         [ProgressUtil]::WriteProgressBar($percent, $true)
     }
     static [void] WriteProgressBar([int]$percent, [bool]$update) {
-        $PBLength = [int]([Console]::WindowWidth * 0.7)
+        [ProgressUtil]::WriteProgressBar($percent, $update, [int]([Console]::WindowWidth * 0.7))
+    }
+    static [void] WriteProgressBar([int]$percent, [bool]$update, [int]$PBLength) {
+        [ValidateNotNull()][int]$PBLength = $PBLength
+        [ValidateNotNull()][int]$percent = $percent
+        [ValidateNotNull()][bool]$update = $update
         [ProgressUtil]::_back = "`b" * [Console]::WindowWidth
         if ($update) { [Console]::Write([ProgressUtil]::_back) }
         [Console]::Write("["); $p = [int](($percent / 100.0) * $PBLength + 0.5)
@@ -304,6 +309,16 @@ class ProgressUtil {
 class NetworkManager {
     [string] $HostName
     static [System.Net.IPAddress[]] $IPAddresses
+    static [recordTbl] $DownloadOptions = [recordTbl]::New(@{
+            ShowProgress      = $true
+            ProgressBarLength = [int]([Console]::WindowWidth * 0.7)
+            ProgressMessage   = [string]::Empty
+            RetryTimeout      = 1000 #(milliseconds)
+            Headers           = @{}
+            Proxy             = $null
+            Force             = $false
+        }
+    )
     static [string] $caller
 
     NetworkManager ([string]$HostName) {
@@ -373,14 +388,18 @@ class NetworkManager {
         $totalBytesReceived = 0
         $totalBytesToReceive = $contentLength
         $OgForeground = (Get-Variable host).Value.UI.RawUI.ForegroundColor
-        Write-Host "[+] Downloading $name to $Outfile" -ForegroundColor Magenta
+        $Progress_Msg = [NetworkManager]::DownloadOptions.ProgressMessage
+        if ([string]::IsNullOrWhiteSpace($Progress_Msg)) { $Progress_Msg = "[+] Downloading $name to $Outfile" }
+        Write-Host $Progress_Msg -ForegroundColor Magenta
         (Get-Variable host).Value.UI.RawUI.ForegroundColor = [ConsoleColor]::Green
         while ($totalBytesToReceive -gt 0) {
             $bytesRead = $stream.Read($buffer, 0, 1024)
             $totalBytesReceived += $bytesRead
             $totalBytesToReceive -= $bytesRead
             $fileStream.Write($buffer, 0, $bytesRead)
-            [ProgressUtil]::WriteProgressBar([int]($totalBytesReceived / $contentLength * 100), $true);
+            if ([NetworkManager]::DownloadOptions.ShowProgress) {
+                [ProgressUtil]::WriteProgressBar([int]($totalBytesReceived / $contentLength * 100), $true, [NetworkManager]::DownloadOptions.progressBarLength);
+            }
         }
         (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
         try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
@@ -1789,7 +1808,7 @@ class Base85 : EncodingBase {
 #     $b64str = [cliart]::ToBase64String((Get-Item ./ascii))
 #     [CliArt]::FromBase64String($b64str) | Write-Host -ForegroundColor Green
 class CliArt {
-    [string]$Base64String
+    hidden [string]$Base64String
     CliArt([byte[]]$ArtBytes) {
         $this.Base64String = [CliArt]::ToBase64String($ArtBytes)
     }
@@ -2344,7 +2363,7 @@ class ArgonCage : CryptoBase {
             [void][ArgonCage]::banners.Add([CliArt]::new('H4sIAAAAAAAAA7VXaXOiQBD9ThU/wlVLjGGNxuBNopZJFmIw3B5RdzUEchiv/P+dwaiAAw6m8mWqeoQ3j9dvulvLzLwOZHEcm3HNyEXbMjPmY6iQJODGAmywkmW24iNFepg2lU8ufb0OheHlKhiMJLAOyybz34Eoi5Z5X00rCn+mDbrJWMIyhSKnqDfGyA5JwrURXdmPy9MkPQ+nxXbDSB8r57J3Kr7MPQRxQ5JQtVQhEvZsJ1vMjIBQUdnR0E1gMOhSHwqUM/vbcCUQhIq+KOzTh2KXpl4feuQM4IuZkeay7hFM/uifpzDcyeT25G6VnnHVhVqEdwPKnfhvX5//8XxrsJxY6gZC7NsxzE1F5CZQzmPc4IbA4+vLliSOfnvD9lBGFIlWa7AUmMjLDisZSfTGucQLqFXLmr2BDgXG64btrwWUnCHV/YIIX6uc7sR//GATwHIDunYeSd+3jwTw9WWLzsiPyenD1rcJ4Kv7M3KGVRfD4Bt1efU5YfGz1sTiDaaWf6GNTqdYfpqQxH13Um60Z9F4W7us9sX8eXPQ2VJ5tHFi/NXQX5qtnEFfw9bVoXjGXaQmYZJKfZTQx/YaaZwKvgw5XxyZ1EMGR/H1ZXvYF9++I4eoALZYPfXus02BYS77FIXjDyMllZPMLiQJz0boMGLLeXiMR6sLp9sKDSFAz5CnQzGGhgDzmVK819ugZ0QKltlYDZHWWsMFgcFB3AfMXXIQfPUl7RzeFZnRof3n3nGtiMynrs1EB1in3uwjRtcHjzu3YLtJt0rfylJL+OXLdtMQi4uZPGD/vcfXBFaGPOgnhZOO64BKZt2gy6eP4ABqCR+OgPlCXtBm3VGhQoPtbmqk7gHzvWut8mu2Ypm5xI39hSQB3dvZcwOc5fW/EQkKVgNh6kkW306c/5QkVYlyo8plDmqxgQPoGQ+YvvauE8z9t+HLWkG1YVplu0m45OGSS4mv89FdnNJnWom5YvV8tlcjCV3rnVLCzUj4FDhTrgrcvMsKvDFfSRpvsGC5ncC3KRsCLlm41LZhgyRs4HbuIkbp7+Z7Y4cuTsZvZyAdLUYa/wf3K1M5Uw8AAA=='))
         }
         [ArgonCage]::banners[(Get-Random (0..([ArgonCage]::banners.Count - 1)))].Tostring() | Write-Host -ForegroundColor Magenta
-        "[!] https://github.com/alainQtec/argoncage" | Write-Host -ForegroundColor Red
+        [void][cli]::Write('[!] https://github.com/alainQtec/argoncage', [ConsoleColor]::Red)
     }
     [void] RegisterUser() {
         # TODO: FINSISH this .. I'm tir3d!
@@ -2591,7 +2610,21 @@ class ArgonCage : CryptoBase {
         $result.Url = $(if ($null -eq [ArgonCage]::SecretStore.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::SecretStore.Name).raw_url) } else { [ArgonCage]::SecretStore.Url })
         if (![IO.File]::Exists($result.File.FullName)) {
             if ([ArgonCage]::useverbose) { "[+] Fetching secrets from gist ..." | Write-Host -ForegroundColor Magenta }
+            [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
+            $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
+            $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
+            $Progress_Msg = "[+] Downloading secrets to {0}" -f $result.File.FullName
+            [NetworkManager]::DownloadOptions.Set(@{
+                    ProgressBarLength = $Progress_Msg.Length - 7
+                    ProgressMessage   = $Progress_Msg
+                }
+            )
             $result.File = [NetworkManager]::DownloadFile($result.Url, $result.File.FullName)
+            [NetworkManager]::DownloadOptions.Set(@{
+                    ProgressBarLength = $og_PbLength
+                    ProgressMessage   = $og_pbMsg
+                }
+            )
             [Console]::Write([Environment]::NewLine)
         }
         return $result
