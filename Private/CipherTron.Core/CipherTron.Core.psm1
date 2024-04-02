@@ -351,7 +351,9 @@ class NetworkManager {
         return [NetworkManager]::DownloadFile($url, $outFile, $false)
     }
     static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile, [bool]$Force) {
-        $stream = $null; $fileStream = $null; $name = Split-Path $url -Leaf;
+        [ValidateNotNullOrEmpty()][uri]$url = $url; [ValidateNotNull()][bool]$Force = ($Force -as [bool])
+        [ValidateNotNullOrEmpty()][string]$outFile = $outFile; $stream = $null;
+        $fileStream = $null; $name = Split-Path $url -Leaf;
         $request = [System.Net.HttpWebRequest]::Create($url)
         $request.UserAgent = "Mozilla/5.0"
         $response = $request.GetResponse()
@@ -775,7 +777,7 @@ class RecordBase {
         $Keys = $table.Keys | Where-Object { $_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType' } | Sort-Object -Unique
         foreach ($key in $Keys) {
             if (!$this.psObject.Properties.Name.Contains($key)) {
-                $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key]
+                $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key] -Force
             } else {
                 $this.$key = $table[$key]
             }
@@ -2436,52 +2438,6 @@ class ArgonCage : CryptoBase {
             }; [void](New-Item -ItemType File -Path $this.Config.File)
         }
     }
-    [string] Get_Config_Path() {
-        return [ArgonCage]::Get_Config_Path($this.Config.FileName)
-    }
-    static [string] Get_Config_Path([string]$FileName) {
-        return [IO.Path]::Combine((Split-Path -Path ([ArgonCage]::Get_dataPath())), $FileName)
-    }
-    [void] SetTMPvariables() {
-        # Sets default variables and stores them in $this::Tmp.vars
-        # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
-        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq $this.Config) { $this.SetConfigs() }
-        [ArgonCage]::Tmp.vars.Set(@{
-                Users            = @{}
-                Host_Os          = [ArgonCage]::Get_Host_Os()
-                ExitCode         = 0
-                OfflineMode      = $this.IsOffline
-                SessionId        = ''
-                SessionConfig    = $this.Config
-                Finish_reason    = ''
-                OgWindowTitle    = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
-                WhatIf_IsPresent = [bool]$((Get-Variable WhatIfPreference).Value.IsPresent)
-            }
-        )
-    }
-    static [hashtable] Get_default_Config() {
-        $Config_FileName = 'Config.enc'
-        $default_DataDir = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
-        $default_Config = @{
-            Remote          = ''
-            FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
-            File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine((Split-Path -Path $default_DataDir.FullName), $Config_FileName))
-            GistUri         = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
-            ERROR_NAMES     = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
-            NoApiKeyHelp    = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
-            ThrowNoApiKey   = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
-            UsageHelp       = "Usage:`nHere's an example of how to use this Password manager:`n   `$pm = [ArgonCage]::new()`n   `$pm.login()`n`nAnd make sure you have Internet."
-            CacheCreds      = $true
-            CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "CachedCreds" , "CredsCache.enc")
-            LastWriteTime   = [datetime]::Now
-        }
-        $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
-        Write-Host "[ArgonCage] Get Remote gist uri for config ..." -ForegroundColor Blue
-        $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)
-        Write-Host "[ArgonCage] Get Remote gist uri Complete" -ForegroundColor Blue
-        return $default_Config
-    }
     # Method to validate the password: This Just checks if its a good enough password
     static [bool] ValidatePassword([SecureString]$password) {
         $IsValid = $false; $minLength = 8; $handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
@@ -2634,7 +2590,7 @@ class ArgonCage : CryptoBase {
         $result.Name = [IO.Path]::GetFileName($result.File.FullName)
         $result.Url = $(if ($null -eq [ArgonCage]::SecretStore.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::SecretStore.Name).raw_url) } else { [ArgonCage]::SecretStore.Url })
         if (![IO.File]::Exists($result.File.FullName)) {
-            if ([ArgonCage]::useverbose) { "[+] Fetch secrets .." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::useverbose) { "[+] Fetching secrets from gist ..." | Write-Host -ForegroundColor Magenta }
             $result.File = [NetworkManager]::DownloadFile($result.Url, $result.File.FullName)
             [Console]::Write([Environment]::NewLine)
         }
@@ -2655,7 +2611,7 @@ class ArgonCage : CryptoBase {
     static [RecordTbl[]] ReadCredsCache([string]$FilePath) {
         $credspath = $FilePath | Split-Path
         if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
-        $ca = @(); if (![IO.File]::Exists($FilePath)) { Write-Verbose "No cached credentials found in '$FilePath'."; return $ca }
+        $ca = @(); if (![IO.File]::Exists($FilePath)) { return $ca }
         $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
         $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($FilePath)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1)
         $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordTbl]::new([xconvert]::ToHashTable($_)) })
@@ -2672,8 +2628,11 @@ class ArgonCage : CryptoBase {
         [ValidateNotNullOrEmpty()][pscredential]$Credential = $Credential
         $results = [ArgonCage]::ReadCredsCache()
         $IsNewTag = $TagName -notin $results.Tag
-        if ($IsNewTag -and !$Force) {
-            Throw [System.InvalidOperationException]::new("CACHE_NOT_FOUND! Please make sure the tag already exist, or use -Force to auto add.")
+        if ($IsNewTag) {
+            if (!$Force) {
+                Throw [System.InvalidOperationException]::new("CACHE_NOT_FOUND! Please make sure the tag already exist, or use -Force to auto add.")
+            }
+            Write-Verbose "Create new file: '$([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath)'."
         }
         Write-Verbose "$(if ($IsNewTag) { "Adding new" } else { "Updating" }) tag: '$TagName' ..."
         if ($results.Count -eq 0 -or $IsNewTag) {
@@ -2770,6 +2729,59 @@ class ArgonCage : CryptoBase {
         Write-Host $("Pressed {0}{1}" -f $(if ($key.Modifiers -ne 'None') { $key.Modifiers.ToString() + '^' }), $key.Key) -ForegroundColor Green
         [System.Console]::TreatControlCAsInput = $originalTreatControlCAsInput
         return $key
+    }
+    hidden [string] Get_Config_Path() {
+        return [ArgonCage]::Get_Config_Path($this.Config.FileName)
+    }
+    hidden static [string] Get_Config_Path([string]$FileName) {
+        return [IO.Path]::Combine((Split-Path -Path ([ArgonCage]::Get_dataPath())), $FileName)
+    }
+    hidden [void] SetTMPvariables() {
+        # Sets default variables and stores them in $this::Tmp.vars
+        # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
+        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        if ($null -eq $this.Config) { $this.SetConfigs() }
+        [ArgonCage]::Tmp.vars.Set(@{
+                Users            = @{}
+                Host_Os          = [ArgonCage]::Get_Host_Os()
+                ExitCode         = 0
+                OfflineMode      = $this.IsOffline
+                SessionId        = ''
+                SessionConfig    = $this.Config
+                Finish_reason    = ''
+                OgWindowTitle    = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
+                WhatIf_IsPresent = [bool]$((Get-Variable WhatIfPreference).Value.IsPresent)
+            }
+        )
+    }
+    static hidden [hashtable] Get_default_Config() {
+        $Config_FileName = 'Config.enc'
+        $default_DataDir = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
+        $default_Config = @{
+            Remote          = ''
+            FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
+            File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine($default_DataDir, $Config_FileName))
+            GistUri         = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
+            ERROR_NAMES     = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
+            NoApiKeyHelp    = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
+            ThrowNoApiKey   = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
+            UsageHelp       = "Usage:`nHere's an example of how to use this Password manager:`n   `$pm = [ArgonCage]::new()`n   `$pm.login()`n`nAnd make sure you have Internet."
+            CacheCreds      = $true
+            CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "CredsCache.enc")
+            LastWriteTime   = [datetime]::Now
+        }
+        try {
+            Write-Host "[ArgonCage] Get Remote gist uri for config ..." -ForegroundColor Blue
+            $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
+            if ($?) {
+                $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)
+            }
+            Write-Host "[ArgonCage] Get Remote gist uri " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
+        } catch {
+            Write-Host "[ArgonCage] Get Remote gist uri Failed!" -ForegroundColor Red
+            Write-Host "            $($_.Exception.PsObject.TypeNames[0]) $($_.Exception.Message)" -ForegroundColor Red
+        }
+        return $default_Config
     }
     static [version] GetVersion() {
         # Returns the current version of the chatbot.
@@ -3461,542 +3473,6 @@ class CredentialManager {
         if (Get-Service vaultsvc -ErrorAction SilentlyContinue) { Start-Service vaultsvc -ErrorAction Stop }
     }
 }
-
-#region    OnedriveClient
-# Onedrive Helper Class to read and store files in Onedrive personal vault
-# Status: Not working! [the GetAuthorizationUrl() method is not working & idk why]
-# Read more at: https://developer.microsoft.com/en-us/onedrive & https://learn.microsoft.com/en-us/onedrive/developer/rest-api
-class OneDriveClient {
-    [string]$clientId # aka the ApplicationID. https://learn.microsoft.com/en-us/onedrive/developer/rest-api/getting-started/msa-oauth?view=odsp-graph-online
-    [string]$clientSecret
-    [string]$tenantId # the tenant ID of your organization
-    [string]$Url = [string]::Empty # ex: "https://your-organization-name.sharepoint.com/sites/vault". If you are accessing your personal OneDrive account, you don't need to use the Url parameter. Instead, you can use the Microsoft Graph API to access your OneDrive account.
-    [string]$resourceId = "https://graph.microsoft.com" # the resource ID of OneDrive for Business
-    [string]$redirectUri = "https://login.microsoftonline.com/common/oauth2/nativeclient" # or "http://localhost" ( the redirect URI for your app)
-    [string]$tokenEndpoint # the OAuth 2.0 token endpoint for your tenant
-    [string]$authorizationEndpoint # the OAuth 2.0 authorization endpoint for your tenant
-    [string]$logoutEndpoint # the OAuth 2.0 logout endpoint for your tenant
-    [string]$scope = "https://graph.microsoft.com/.default" # the scope for the OAuth 2.0 authorization request
-    [string]$responseType = "code" # the response type for the OAuth 2.0 authorization request
-    [string]$grantType = "authorization_code" # the grant type for the OAuth 2.0 token request
-    [string]$clientCredentials # Set the client credentials for the OAuth 2.0 token request
-    [string]$contentType = "application/x-www-form-urlencoded" # Set the content type for the HTTP POST request
-    [string]$userAgent = "OneDriveClient/1.0" # Set the user agent for the HTTP request
-    [int]$requestTimeout = 30 # Set the request timeout
-    [int]$maxRetries = 3 # the maximum number of retries for failed requests
-    [int]$retryInterval = 1000 # the retry interval for failed requests
-    [int]$retryIncrement = 1000 # the retry increment for failed requests
-    [int]$pageSize = 100# the maximum number of items to return per page
-    [int]$maxPages = 10 # the maximum number of pages to return
-    # Set the default base URLs for the OneDrive API and file picker
-    [string]$apiUrl = "https://graph.microsoft.com/v1.0" # the base URL for the OneDrive API
-    [string]$pickerUrl = "https://onedrive.live.com/picker" # the base URL for the OneDrive file picker
-    [string]$sharingUrl = "https://onedrive.live.com/sharing/v2" # the base URL for the OneDrive sharing links
-
-    OneDriveClient ([string]$clientId, [string]$clientSecret, [string]$tenantId) {
-        $this.clientId = $clientId
-        $this.clientSecret = $clientSecret
-        $this.tenantId = $tenantId
-        $this._init($true);
-    }
-    # Get the authorization URL for the OAuth 2.0 authorization request
-    [string] GetAuthorizationUrl() {
-        # Build the query string for the OAuth 2.0 authorization request
-        # Ex: https://login.microsoftonline.com/common/oauth2/authorize?client_id=your-client-id&redirect_uri=your-redirect-uri&response_type=code&scope=https://graph.microsoft.com/.default
-        $query = [PSCustomObject]@{
-            client_id     = $this.clientId
-            redirect_uri  = $this.redirectUri
-            response_type = $this.responseType
-            scope         = $this.scope
-        }
-        $authorizationUrl = "$($this.authorizationEndpoint)?client_id=$($query.client_id)&redirect_uri=$($query.redirect_uri)&response_type=$($query.response_type)&scope=$($query.scope)"
-        if ([string]::IsNullOrWhiteSpace($authorizationUrl)) {
-            throw 'Failed to get the Authorization Url'
-        }
-        return $authorizationUrl
-    }
-    # Get the access token for the OAuth 2.0 token request
-    [System.Collections.Generic.Dictionary[string, string]] GetAccessToken([string]$code) {
-        # Build the body for the OAuth 2.0 token request
-        $body = & ([scriptblock]::Create("[System.Web.HttpUtility]::ParseQueryString([string]::Empty)"))
-        $body["client_id"] = $this.clientId
-        $body["redirect_uri"] = $this.redirectUri
-        $body["client_secret"] = $this.clientSecret
-        $body["code"] = $code
-        $body["grant_type"] = $this.grantType
-        $body["scope"] = $this.scope
-
-        # Build the HTTP request for the OAuth 2.0 token request
-        $request = [System.Net.WebRequest]::Create($this.tokenEndpoint)
-        $request.Method = "POST"
-        $request.ContentType = $this.contentType
-        $request.UserAgent = $this.userAgent
-        $request.Timeout = $this.requestTimeout
-        $request.Headers.Add("Authorization", "Basic $($this.clientCredentials)")
-        $request.ContentLength = $body.ToString().Length
-        $requestStream = $request.GetRequestStream()
-        $requestStream.Write([System.Text.Encoding]::ASCII.GetBytes($body.ToString()), 0, $body.ToString().Length)
-        $requestStream.Close()
-
-        # Send the OAuth 2.0 token request and get the response
-        $response = $request.GetResponse()
-        $responseStream = $response.GetResponseStream()
-        $responseReader = New-Object System.IO.StreamReader($responseStream)
-        $responseText = $responseReader.ReadToEnd()
-        $responseReader.Close()
-        $responseStream.Close()
-        $response.Close()
-
-        # Parse the response and return the access token
-        $responseJson = ConvertFrom-Json $responseText
-        return [System.Collections.Generic.Dictionary[string, string]]@{
-            "access_token"  = $responseJson.access_token
-            "refresh_token" = $responseJson.refresh_token
-            "expires_in"    = $responseJson.expires_in
-        }
-    }
-    # Refresh the access token for the OAuth 2.0 token request
-    [System.Collections.Generic.Dictionary[string, string]] RefreshAccessToken([string]$refreshToken) {
-        # Build the body for the OAuth 2.0 token request
-        $body = & ([scriptblock]::Create("[System.Web.HttpUtility]::ParseQueryString([string]::Empty)"))
-        $body["client_id"] = $this.clientId
-        $body["redirect_uri"] = $this.redirectUri
-        $body["client_secret"] = $this.clientSecret
-        $body["refresh_token"] = $refreshToken
-        $body["grant_type"] = "refresh_token"
-        $body["scope"] = $this.scope
-
-        # Build the HTTP request for the OAuth 2.0 token request
-        $request = [System.Net.WebRequest]::Create($this.tokenEndpoint)
-        $request.Method = "POST"
-        $request.ContentType = $this.contentType
-        $request.UserAgent = $this.userAgent
-        $request.Timeout = $this.requestTimeout
-        $request.Headers.Add("Authorization", "Basic $($this.clientCredentials)")
-        $request.ContentLength = $body.ToString().Length
-        $requestStream = $request.GetRequestStream()
-        $requestStream.Write([System.Text.Encoding]::ASCII.GetBytes($body.ToString()), 0, $body.ToString().Length)
-        $requestStream.Close()
-
-        # Send the OAuth 2.0 token request and get the response
-        $response = $request.GetResponse()
-        $responseStream = $response.GetResponseStream()
-        $responseReader = New-Object System.IO.StreamReader($responseStream)
-        $responseText = $responseReader.ReadToEnd()
-        $responseReader.Close()
-        $responseStream.Close()
-        $response.Close()
-
-        # Parse the response and return the access token
-        $responseJson = ConvertFrom-Json $responseText
-        return [System.Collections.Generic.Dictionary[string, string]]@{
-            "access_token"  = $responseJson.access_token
-            "refresh_token" = $responseJson.refresh_token
-            "expires_in"    = $responseJson.expires_in
-        }
-    }
-    # Authenticate the user and get an access token
-    [System.Collections.Generic.Dictionary[string, string]] Authenticate() {
-        $authUrl = $this.GetAuthorizationUrl() # Get the authorization URL
-        # todo: Fix this method
-        # Start-Process $authUrl # Open the authorization URL in the default web browser
-        # $code = Read-Host -Prompt "Enter the authorization code"
-        Set-Content "$env:temp\getCode.js" -Value "async function getCode() {
-                    const authUrl = '$authUrl';
-                    const response = await fetch(authUrl);
-                    const code = new URL(response.url).searchParams.get('code');
-                    return code;
-                }
-                async function main() {
-                    let authCode = await getCode();
-                    console.log(authCode);
-                }
-                main()"; $code = & ([scriptblock]::Create("node.exe '$env:temp\getCode.js'"));
-        $token = $this.GetAccessToken($code) # Get the access token
-        # Return the access token
-        return $token
-    }
-    [OneDriveClient] CreateInstance() {
-        $client = [OneDriveClient]::new()
-        $client.clientId = $this.clientId
-        $client.clientSecret = $this.clientSecret
-        $client.tenantId = $this.tenantId
-        $client.resourceId = $this.resourceId
-        $client.redirectUri = $this.redirectUri
-        $client.tokenEndpoint = $this.tokenEndpoint
-        $client.authorizationEndpoint = $this.authorizationEndpoint
-        $client.logoutEndpoint = $this.logoutEndpoint
-        $client.scope = $this.scope
-        $client.responseType = $this.responseType
-        $client.grantType = $this.grantType
-        $client.clientCredentials = $this.clientCredentials
-        $client.contentType = $this.contentType
-        $client.userAgent = $this.userAgent
-        $client.requestTimeout = $this.requestTimeout
-        $client.maxRetries = $this.maxRetries
-        $client.retryInterval = $this.retryInterval
-        $client.retryIncrement = $this.retryIncrement
-        $client.pageSize = $this.pageSize
-        $client.maxPages = $this.maxPages
-        $client.apiUrl = $this.apiUrl
-        $client.pickerUrl = $this.pickerUrl
-        $client.sharingUrl = $this.sharingUrl
-        return $client
-    }
-    [string] ListFiles() {
-        # Create a new OneDriveClient instance
-        $client = $this.CreateInstance()
-        # Authenticate the app and get an access token
-        # Authenticate the user and get an access token #ie: $token = $client.Authenticate()
-        $authResponse = $client.Authenticate()
-        $accessToken = $authResponse.access_token
-        # Use the access token to make a request to the OneDrive API
-        $headers = @{
-            "Authorization" = "Bearer $accessToken"
-        }
-        $response = (Invoke-RestMethod -Uri "$($this.apiUrl)/me/drive/root/children" -Method GET -Headers $headers) | ConvertTo-Json
-        # Print the response
-        return $response
-    }
-    # Get the drive ID for the OneDrive Vault
-    [string] GetDriveId([string]$accessToken) {
-        # Set the retry counter
-        $retries = 0
-
-        # Set the drive ID to null
-        $driveId = $null
-
-        # Get the drive ID
-        while ($retries -lt $this.maxRetries -and -not $driveId) {
-            try {
-                # Build the HTTP request for the OneDrive API
-                $request = [System.Net.WebRequest]::Create("$($this.apiUrl)/sites/$($this.Url)/drive")
-                $request.Method = "GET"
-                $request.ContentType = $this.contentType
-                $request.UserAgent = $this.userAgent
-                $request.Timeout = $this.requestTimeout
-                $request.Headers.Add("Authorization", "Bearer $accessToken")
-
-                # Send the OneDrive API request and get the response
-                $response = $request.GetResponse()
-                $responseStream = $response.GetResponseStream()
-                $responseReader = New-Object System.IO.StreamReader($responseStream)
-                $responseText = $responseReader.ReadToEnd()
-                $responseReader.Close()
-                $responseStream.Close()
-                $response.Close()
-
-                # Parse the response and set the drive ID
-                $responseJson = ConvertFrom-Json $responseText
-                $driveId = $responseJson.id
-            } catch [System.Net.WebException] {
-                # Increment the retry counter
-                $retries++
-
-                # Wait for the retry interval
-                Start-Sleep -Milliseconds $this.retryInterval
-
-                # Increase the retry interval
-                $this.retryInterval += $this.retryIncrement
-            }
-        }
-
-        # Return the drive ID
-        return $driveId
-    }
-    # Get the root folder ID for the OneDrive Vault
-    [string] GetRootFolderId([string]$accessToken, [string]$driveId) {
-        # Set the retry counter
-        $retries = 0
-
-        # Set the root folder ID to null
-        $rootFolderId = $null
-
-        # Get the root folder ID
-        while ($retries -lt $this.maxRetries -and -not $rootFolderId) {
-            try {
-                # Build the HTTP request for the OneDrive API
-                $request = [System.Net.WebRequest]::Create("$($this.apiUrl)/drives/$driveId/root")
-                $request.Method = "GET"
-                $request.ContentType = $this.contentType
-                $request.UserAgent = $this.userAgent
-                $request.Timeout = $this.requestTimeout
-                $request.Headers.Add("Authorization", "Bearer $accessToken")
-
-                # Send the OneDrive API request and get the response
-                $response = $request.GetResponse()
-                $responseStream = $response.GetResponseStream()
-                $responseReader = New-Object System.IO.StreamReader($responseStream)
-                $responseText = $responseReader.ReadToEnd()
-                $responseReader.Close()
-                $responseStream.Close()
-                $response.Close()
-
-                # Parse the response and set the root folder ID
-                $responseJson = ConvertFrom-Json $responseText
-                $rootFolderId = $responseJson.id
-            } catch [System.Net.WebException] {
-                # Increment the retry counter
-                $retries++
-
-                # Wait for the retry interval
-                Start-Sleep -Milliseconds $this.retryInterval
-
-                # Increase the retry interval
-                $this.retryInterval += $this.retryIncrement
-            }
-        }
-
-        # Return the root folder ID
-        return $rootFolderId
-    }
-    # Get the folder ID for the specified folder path
-    [string] GetFolderId([string]$accessToken, [string]$driveId, [string]$folderPath) {
-        # Set the retry counter & folder ID
-        $retries = 0; $folderId = $null
-        # Get the folder ID
-        while ($retries -lt $this.maxRetries -and -not $folderId) {
-            try {
-                # Build the HTTP request for the OneDrive API
-                $request = [System.Net.WebRequest]::Create("$($this.apiUrl)/drives/${driveId}/root:/${folderPath}:/id")
-                $request.Method = "GET"
-                $request.ContentType = $this.contentType
-                $request.UserAgent = $this.userAgent
-                $request.Timeout = $this.requestTimeout
-                $request.Headers.Add("Authorization", "Bearer $accessToken")
-
-                # Send the OneDrive API request and get the response
-                $response = $request.GetResponse()
-                $responseStream = $response.GetResponseStream()
-                $responseReader = New-Object System.IO.StreamReader($responseStream)
-                $responseText = $responseReader.ReadToEnd()
-                $responseReader.Close()
-                $responseStream.Close()
-                $response.Close()
-
-                # Parse the response and set the folder ID
-                $responseJson = ConvertFrom-Json $responseText
-                $folderId = $responseJson.id
-            } catch [System.Net.WebException] {
-                # Increment the retry counter
-                $retries++
-                # Wait for the retry interval
-                Start-Sleep -Milliseconds $this.retryInterval
-                # Increase the retry interval
-                $this.retryInterval += $this.retryIncrement
-            }
-        }
-
-        # Return the folder ID
-        return $folderId
-    }
-    # Create a folder with the specified name and parent folder ID
-    [string] CreateFolder([string]$accessToken, [string]$driveId, [string]$folderName, [string]$parentFolderId) {
-        # Set the retry counter
-        $retries = 0
-
-        # Set the folder ID to null
-        $folderId = $null
-
-        # Create the folder
-        while ($retries -lt $this.maxRetries -and -not $folderId) {
-            try {
-                # Build the body for the OneDrive API request
-                $body = @{
-                    "name"            = $folderName
-                    "folder"          = @{}
-                    "parentReference" = @{
-                        "driveId" = $driveId
-                        "id"      = $parentFolderId
-                    }
-                } | ConvertTo-Json -Depth 10
-
-                # Build the HTTP request for the OneDrive API
-                $request = [System.Net.WebRequest]::Create("$($this.apiUrl)/drives/$driveId/items/$parentFolderId/children")
-                $request.Method = "POST"
-                $request.ContentType = $this.contentType
-                $request.UserAgent = $this.userAgent
-                $request.Timeout = $this.requestTimeout
-                $request.Headers.Add("Authorization", "Bearer $accessToken")
-                $request.ContentLength = $body.Length
-                $requestStream = $request.GetRequestStream()
-                $requestStream.Write([System.Text.Encoding]::ASCII.GetBytes($body), 0, $body.Length)
-                $requestStream.Close()
-
-                # Send the OneDrive API request and get the response
-                $response = $request.GetResponse()
-                $responseStream = $response.GetResponseStream()
-                $responseReader = New-Object System.IO.StreamReader($responseStream)
-                $responseText = $responseReader.ReadToEnd()
-                $responseReader.Close()
-                $responseStream.Close()
-                $response.Close()
-
-                # Parse the response and set the folder ID
-                $responseJson = ConvertFrom-Json $responseText
-                $folderId = $responseJson.id
-            } catch [System.Net.WebException] {
-                # Increment the retry counter
-                $retries++
-                # Wait for the retry interval
-                Start-Sleep -Milliseconds $this.retryInterval
-                # Increase the retry interval
-                $this.retryInterval += $this.retryIncrement
-            }
-        }
-
-        # Return the folder ID
-        return $folderId
-    }
-    # Upload a file to the specified folder ID
-    [string] UploadFile([string]$accessToken, [string]$driveId, [string]$folderId, [string]$fileName, [string]$filePath) {
-        # Set the retry counter
-        $retries = 0
-
-        # Set the file ID to null
-        $fileId = $null
-
-        # Upload the file
-        while ($retries -lt $this.maxRetries -and -not $fileId) {
-            try {
-                # Build the body for the OneDrive API request
-                $body = @{
-                    "name"            = $fileName
-                    "file"            = @{}
-                    "parentReference" = @{
-                        "driveId" = $driveId
-                        "id"      = $folderId
-                    }
-                } | ConvertTo-Json -Depth 10
-
-                # Build the HTTP request for the OneDrive API
-                $request = [System.Net.WebRequest]::Create("$($this.apiUrl)/drives/$driveId/items/$folderId/children")
-                $request.Method = "POST"
-                $request.ContentType = "application/json"
-                $request.UserAgent = $this.userAgent
-                $request.Timeout = $this.requestTimeout
-                $request.Headers.Add("Authorization", "Bearer $accessToken")
-                $request.ContentLength = $body.Length
-                $requestStream = $request.GetRequestStream()
-                $requestStream.Write([System.Text.Encoding]::ASCII.GetBytes($body), 0, $body.Length)
-                $requestStream.Close()
-
-                # Send the OneDrive API request and get the response
-                $response = $request.GetResponse()
-                $responseStream = $response.GetResponseStream()
-                $responseReader = New-Object System.IO.StreamReader($responseStream)
-                $responseText = $responseReader.ReadToEnd()
-                $responseReader.Close()
-                $responseStream.Close()
-                $response.Close()
-
-                # Parse the response and set the file ID
-                $responseJson = ConvertFrom-Json $responseText
-                $fileId = $responseJson.id
-
-                # Get the upload URL
-                $request = [System.Net.WebRequest]::Create("$($this.apiUrl)/drives/$driveId/items/$fileId/content")
-                $request.Method = "GET"
-                $request.ContentType = "application/json"
-                $request.UserAgent = $this.userAgent
-                $request.Timeout = $this.requestTimeout
-                $request.Headers.Add("Authorization", "Bearer $accessToken")
-                $response = $request.GetResponse()
-                $uploadUrl = $response.ResponseUri.ToString()
-                $response.Close()
-
-                # Read the file data
-                $fileData = [System.IO.File]::ReadAllBytes($filePath)
-
-                # Build the HTTP request for the OneDrive API
-                $request = [System.Net.WebRequest]::Create($uploadUrl)
-                $request.Method = "PUT"
-                $request.ContentType = "application/octet-stream"
-                $request.UserAgent = $this.userAgent
-                $request.Timeout = $this.requestTimeout
-                $request.Headers.Add("Authorization", "Bearer $accessToken")
-                $request.ContentLength = $fileData.Length
-                $requestStream = $request.GetRequestStream()
-                $requestStream.Write($fileData, 0, $fileData.Length)
-                $requestStream.Close()
-                # Send the OneDrive API request
-                $response = $request.GetResponse()
-                $response.Close()
-            } catch [System.Net.WebException] {
-                # Increment the retry counter
-                $retries++
-                # Wait for the retry interval
-                Start-Sleep -Milliseconds $this.retryInterval
-                # Increase the retry interval
-                $this.retryInterval += $this.retryIncrement
-            }
-        }
-        # Return the file ID
-        return $fileId
-    }
-    # Download a file with the specified ID
-    [void] DownloadFile([string]$accessToken, [string]$driveId, [string]$fileId, [string]$filePath) {
-        # Set the retry counter
-        $retries = 0
-        # Download the file
-        while ($retries -lt $this.maxRetries) {
-            try {
-                $request = [System.Net.WebRequest]::Create("$($this.apiUrl)/drives/$driveId/items/$fileId/content")
-                $request.Method = "GET"
-                $request.ContentType = "application/octet-stream"
-                $request.UserAgent = $this.userAgent
-                $request.Timeout = $this.requestTimeout
-                $request.Headers.Add("Authorization", "Bearer $accessToken")
-
-                # Send the OneDrive API request and get the response
-                $response = $request.GetResponse()
-                $responseStream = $response.GetResponseStream()
-
-                # Save the file
-                [System.IO.File]::WriteAllBytes($filePath, [System.IO.Stream]::ReadAllBytes($responseStream))
-                $responseStream.Close()
-                $response.Close()
-
-                # Exit the loop
-                break
-            } catch [System.Net.WebException] {
-                # Increment the retry counter
-                $retries++
-                # Wait for the retry interval
-                Start-Sleep -Milliseconds $this.retryInterval
-                # Increase the retry interval
-                $this.retryInterval += $this.retryIncrement
-            }
-        }
-    }
-    [bool]hidden CheckValidProps () {
-        return $this.CheckValidProps($true)
-    }
-    [bool]hidden CheckValidProps ([bool]$ThrowOnFailure) {
-        $Hasvp = $true; $err = @(); $res = @(); $props = $this.PsObject.Properties | Where-Object { $_.Name -ne "Url" }
-        foreach ($prop in $props) {
-            if ($null -eq $prop.value) {
-                $res = [PSCustomObject]@{
-                    Hasvp = $Hasvp -and $false
-                    Err   = $err += "$($prop.Name) is not set. Please set the $($prop.Name) Parameter."
-                }
-            }
-        }
-        $ErrorMessage = [string]($res.err -join "`n")
-        if ($ThrowOnFailure -and !$Hasvp) {
-            throw [System.Exception]::new($ErrorMessage)
-        }
-        return $res.Hasvp
-    }
-    [void]hidden _init([bool]$ThrowOnFailure) {
-        $this.tokenEndpoint = "https://login.microsoftonline.com/$($this.tenantId)/oauth2/token"
-        $this.authorizationEndpoint = "https://login.microsoftonline.com/$($this.tenantId)/oauth2/authorize"
-        $this.logoutEndpoint = "https://login.microsoftonline.com/$($this.tenantId)/oauth2/logout"
-        $this.clientCredentials = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($this.clientId):$($this.clientSecret)"));
-        $this.CheckValidProps($ThrowOnFailure)
-    }
-}
-#endregion OnedriveClient
 
 # .DESCRIPTION
 #     Hashicorp VaultClient helper class for interacting with a Vault server by the Vault API.
@@ -7792,8 +7268,8 @@ class CommandLineParser {
 }
 class RecordTbl : RecordBase {
     static hidden [string] $caller = '[RecordTbl]'
-    [uri] $Remote # usually a gist uri
-    [string] $File
+    hidden [uri] $Remote # usually a gist uri
+    hidden [string] $File
     [datetime] $LastWriteTime = [datetime]::Now
     RecordTbl() {
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
@@ -7807,10 +7283,10 @@ class RecordTbl : RecordBase {
     [void] Save() {
         $pass = $null;
         try {
-            Write-Host "$([RecordTbl]::caller) Save Config to file: $($this.File) ..."
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to encrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            Write-Host "$([RecordTbl]::caller) Save Config to file: $($this.File) ..." -ForegroundColor Blue
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
-            Write-Host "$([RecordTbl]::caller) Save Config Complete"
+            Write-Host "$([RecordTbl]::caller) Save Config " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
         } catch {
             throw $_.Exeption
         } finally {
