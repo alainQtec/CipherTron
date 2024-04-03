@@ -2638,7 +2638,7 @@ class ArgonCage : CryptoBase {
             throw "No session detected! ie: [ArgonCage]::new() should run first"
         }
         $sc = [ArgonCage]::Tmp.vars.SessionConfig
-        if (!$sc.CacheCreds) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('CacheCreds', `$true)" }
+        if (!$sc.KeepCredsCache) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('KeepCredsCache', `$true)" }
         return [ArgonCage]::ReadCredsCache($sc.CachedCredsPath)
     }
     static [RecordTbl[]] ReadCredsCache([string]$FilePath) {
@@ -2799,7 +2799,7 @@ class ArgonCage : CryptoBase {
             NoApiKeyHelp    = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
             ThrowNoApiKey   = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
             UsageHelp       = "Usage:`nHere's an example of how to use this Password manager:`n   `$pm = [ArgonCage]::new()`n   `$pm.login()`n`nAnd make sure you have Internet."
-            CacheCreds      = $true
+            KeepCredsCache  = $true
             CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "CredsCache.enc")
             LastWriteTime   = [datetime]::Now
         }
