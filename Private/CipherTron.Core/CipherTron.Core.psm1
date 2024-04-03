@@ -380,6 +380,8 @@ class NetworkManager {
             if (!$Force) { throw [InvalidArgumentException]::new("outFile", "Please provide valid file path, not a directory.") }
             $outPath = Join-Path -Path $outFile -ChildPath $name
         }
+        $Outdir = [IO.Path]::GetDirectoryName($outPath)
+        if (![System.IO.Directory]::Exists($Outdir)) { [void][System.IO.Directory]::CreateDirectory($Outdir) }
         if ([IO.File]::Exists($outPath)) {
             if (!$Force) { throw "$outFile already exists" }
             Remove-Item $outPath -Force -ErrorAction Ignore | Out-Null
