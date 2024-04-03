@@ -2758,6 +2758,14 @@ class ArgonCage : CryptoBase {
         if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
         [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }
+    static [securestring] ResolveSecret([securestring]$secret, [string]$cacheTag) {
+        $cache = [ArgonCage]::ReadCredsCache().Where({ $_.Tag -eq $cacheTag })
+        if ($null -eq $cache) {
+            throw "Secret not found in cache. Please make sure creds caching is enabled."
+        }
+        $TokenSTR = $cache.Token
+        return [HKDF2]::Resolve($secret, $TokenSTR)
+    }
     static [ConsoleKeyInfo] ReadInput() {
         $originalTreatControlCAsInput = [System.Console]::TreatControlCAsInput
         if (![console]::KeyAvailable) { [System.Console]::TreatControlCAsInput = $true }
@@ -5666,7 +5674,7 @@ class k3y {
         }
         return $IsValid
     }
-    [securestring]hidden ResolvePassword([securestring]$Password) {
+    [securestring] hidden ResolvePassword([securestring]$Password) {
         if (!$this.IsHashed()) {
             $hashSTR = [string]::Empty; Set-Variable -Name hashSTR -Scope local -Visibility Private -Option Private -Value $([string][xconvert]::ToHexString([HKDF2]::GetToken($password)));
             & ([scriptblock]::Create("`$this.User.psobject.Properties.Add([psscriptproperty]::new('Password', { ConvertTo-SecureString -AsPlainText -String '$hashSTR' -Force }))"));
