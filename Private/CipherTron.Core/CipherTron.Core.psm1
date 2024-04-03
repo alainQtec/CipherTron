@@ -2296,10 +2296,13 @@ class FileMonitor {
 class SecretStore {
     [string]$Name
     [uri]$Url
-    static hidden [string]$DataPath = [cryptobase]::Get_dataPath('ArgonCage', 'records')
+    static hidden [ValidateNotNullOrWhiteSpace()][string]$DataPath
 
     SecretStore([string]$Name) {
         $this.Name = $Name
+        if ([string]::IsNullOrWhiteSpace([SecretStore]::DataPath)) {
+            [SecretStore]::DataPath = [IO.Path]::Combine([cryptobase]::Get_dataPath('ArgonCage', 'Data'), 'secrets')
+        }
         $this.psobject.Properties.Add([psscriptproperty]::new('File', {
                     return [IO.FileInfo]::new([IO.Path]::Combine([SecretStore]::DataPath, $this.Name))
                 }, {
@@ -2349,7 +2352,7 @@ class ArgonCage : CryptoBase {
 
     ArgonCage() {
         $this.Version = [ArgonCage]::GetVersion()
-        $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ return [ArgonCage]::Get_dataPath('ArgonCage', 'Data') })))
+        $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ $path = [ArgonCage]::Get_dataPath('ArgonCage', 'Data'); [SecretStore]::DataPath = [IO.Path]::Combine($path, 'secrets'); return $path })))
         $this.SetTMPvariables(); $this.SaveConfigs() # $this.ImportConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
     }
@@ -2711,7 +2714,7 @@ class ArgonCage : CryptoBase {
         [ArgonCage]::EditSecrets([ArgonCage]::SecretStore.File.FullName)
     }
     static [void] EditSecrets([String]$Path) {
-        $private:records = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
+        $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
             [NetworkManager]::BlockAllOutbound()
             if ([ArgonCage]::useverbose) { "[+] Edit secrets started .." | Write-Host -ForegroundColor Magenta }
@@ -2723,7 +2726,7 @@ class ArgonCage : CryptoBase {
             $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
             $process.Start(); $fswatcher = [FileMonitor]::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
             if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
-            $private:records = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
+            $private:secrets = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
         } finally {
             [NetworkManager]::UnblockAllOutbound()
             if ($fswatcher) { $fswatcher.Dispose() }
@@ -2740,7 +2743,7 @@ class ArgonCage : CryptoBase {
             }
             Remove-Item $outFile.FullName -Force
             if ([ArgonCage]::useverbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -ForegroundColor Magenta }
-            if ($null -ne $records) { [ArgonCage]::UpdateSecrets($records, $Path) }
+            if ($null -ne $secrets) { [ArgonCage]::UpdateSecrets($secrets, $Path) }
             if ([ArgonCage]::useverbose) { "[+] Edit secrets completed." | Write-Host -ForegroundColor Magenta }
         }
     }
