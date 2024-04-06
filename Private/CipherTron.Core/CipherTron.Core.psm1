@@ -2348,7 +2348,6 @@ class ArgonCage : CryptoBase {
     [ValidateNotNullOrEmpty()][version] $Version
     static hidden [ValidateNotNull()][SessionTmp] $Tmp
     static [SecretStore] $SecretStore = [SecretStore]::new("secret_Info")
-    static [bool] $useverbose = $verbosePreference -eq "continue"
     static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
 
@@ -2495,8 +2494,8 @@ class ArgonCage : CryptoBase {
     static [string] GeneratePassword([int]$Length, [bool]$StartWithLetter, [bool]$NoSymbols, [bool]$UseAmbiguousCharacters, [bool]$UseExtendedAscii) {
         # https://stackoverflow.com/questions/55556/characters-to-avoid-in-automatically-generated-passwords
         [string]$possibleCharacters = [char[]](33..126 + 161..254); $MinrL = 14; $MaxrL = 999 # Gotta have some restrictions, or one typo could endup creating insanely long or small Passwords, ex 30000 intead of 30.
-        if ($Length -lt $MinrL) { Write-Warning "Length is below the Minimum required 'Password Length'. Try $MinrL or greater." ; Break }
-        if ($Length -gt $MaxrL) { Write-Warning "Length is greater the Maximum required 'Password Length'. Try $MaxrL or lower." ; Break }
+        if ($Length -lt $MinrL) { Write-Warning "Length is below the Minimum required 'Password Length'. Try $MinrL or greater."; Break }
+        if ($Length -gt $MaxrL) { Write-Warning "Length is greater the Maximum required 'Password Length'. Try $MaxrL or lower."; Break }
         # Warn the user if they've specified mutually-exclusive options.
         if ($NoSymbols -and $UseExtendedAscii) { Write-Warning 'The -NoSymbols parameter was also specified.  No extended ASCII characters will be used.' }
         do {
@@ -2614,7 +2613,7 @@ class ArgonCage : CryptoBase {
         $result.Name = [IO.Path]::GetFileName($result.File.FullName)
         $result.Url = $(if ($null -eq [ArgonCage]::SecretStore.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::SecretStore.Name).raw_url) } else { [ArgonCage]::SecretStore.Url })
         if (![IO.File]::Exists($result.File.FullName)) {
-            if ([ArgonCage]::useverbose) { "[+] Fetching secrets from gist ..." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -ForegroundColor Magenta }
             [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
             $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
             $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
@@ -2639,9 +2638,7 @@ class ArgonCage : CryptoBase {
     }
     static [RecordTbl[]] ReadCredsCache() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) {
-            throw "No session detected! ie: [ArgonCage]::new() should run first"
-        }
+        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables([RecordTbl]::new([ArgonCage]::Get_default_Config())) }
         $sc = [ArgonCage]::Tmp.vars.SessionConfig
         if (!$sc.KeepCredsCache) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('KeepCredsCache', `$true)" }
         return [ArgonCage]::ReadCredsCache($sc.CachedCredsPath)
@@ -2719,7 +2716,7 @@ class ArgonCage : CryptoBase {
         $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
             [NetworkManager]::BlockAllOutbound()
-            if ([ArgonCage]::useverbose) { "[+] Edit secrets started .." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets started .." | Write-Host -ForegroundColor Magenta }
             [ArgonCage]::GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
             $process = [System.Diagnostics.Process]::new()
@@ -2744,9 +2741,9 @@ class ArgonCage : CryptoBase {
                 $process.Dispose()
             }
             Remove-Item $outFile.FullName -Force
-            if ([ArgonCage]::useverbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -ForegroundColor Magenta }
             if ($null -ne $secrets) { [ArgonCage]::UpdateSecrets($secrets, $Path) }
-            if ([ArgonCage]::useverbose) { "[+] Edit secrets completed." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets completed." | Write-Host -ForegroundColor Magenta }
         }
     }
     static [void] UpdateSecrets([psObject]$InputObject, [string]$outFile) {
@@ -2754,7 +2751,7 @@ class ArgonCage : CryptoBase {
         [ArgonCage]::UpdateSecrets($InputObject, [ArgonCage]::GetUnResolvedPath($outFile), $password, '')
     }
     static [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        if ([ArgonCage]::useverbose) { "[+] Updating secrets .." | Write-Host -ForegroundColor Green }
+        if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Updating secrets .." | Write-Host -ForegroundColor Green }
         if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
         [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }
@@ -2783,20 +2780,24 @@ class ArgonCage : CryptoBase {
         return [IO.Path]::Combine((Split-Path -Path ([ArgonCage]::Get_dataPath())), $FileName)
     }
     hidden [void] SetTMPvariables() {
+        if ($null -eq $this.Config) { $this.SetConfigs() }
+        [ArgonCage]::SetTMPvariables($this.Config)
+    }
+    static hidden [void] SetTMPvariables([RecordTbl]$Config) {
         # Sets default variables and stores them in $this::Tmp.vars
         # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq $this.Config) { $this.SetConfigs() }
         [ArgonCage]::Tmp.vars.Set(@{
-                Users            = @{}
-                Host_Os          = [ArgonCage]::Get_Host_Os()
-                ExitCode         = 0
-                OfflineMode      = $this.IsOffline
-                SessionId        = ''
-                SessionConfig    = $this.Config
-                Finish_reason    = ''
-                OgWindowTitle    = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
-                WhatIf_IsPresent = [bool]$((Get-Variable WhatIfPreference).Value.IsPresent)
+                Users         = @{}
+                Host_Os       = [ArgonCage]::Get_Host_Os()
+                ExitCode      = 0
+                OfflineMode   = (Test-Connection github.com -Count 1).status -ne "Success"
+                SessionId     = ''
+                SessionConfig = $Config
+                Finish_reason = ''
+                OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
+                UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
+                UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
             }
         )
     }
