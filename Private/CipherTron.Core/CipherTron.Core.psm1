@@ -830,7 +830,7 @@ class RecordBase {
         }
         return $dict
     }
-    [hashtable[]] Read([string]$FilePath) {
+    static [hashtable[]] Read([string]$FilePath) {
         $pass = $null; $cfg = $null
         try {
             [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
@@ -845,6 +845,62 @@ class RecordBase {
             Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }
         return $cfg
+    }
+    static [hashtable[]] EditFile([IO.FileInfo]$File) {
+        $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
+        [ValidateScript({ if ([IO.File]::Exists($_)) { return $true } ; throw [FileNotFoundException]::new("File '$_' was not found") })][IO.FileInfo]$File = $File;
+        $OutFile = [IO.FileInfo][IO.Path]::GetTempFileName()
+        $UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
+        try {
+            [NetworkManager]::BlockAllOutbound()
+            if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -ForegroundColor Magenta }
+            [RecordTbl]::Read($File.FullName) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
+            Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo.FileName = 'nvim'
+            $process.StartInfo.Arguments = $outFile.FullName
+            $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
+            $process.Start(); $fswatcher = [FileMonitor]::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
+            if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
+            $private:config_ob = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
+        } finally {
+            [NetworkManager]::UnblockAllOutbound()
+            if ($fswatcher) { $fswatcher.Dispose() }
+            if ($process) {
+                "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
+                        $process.Kill($true)
+                        "closed"
+                    } else {
+                        "exited"
+                    }
+                ) | Write-Host -ForegroundColor Green
+                $process.Close()
+                $process.Dispose()
+            }
+            Remove-Item $outFile.FullName -Force
+            if ($UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -ForegroundColor Magenta }
+            if ($null -ne $config_ob) { $result = $config_ob.ForEach({ [xconvert]::ToHashTable($_) }) }
+            if ($UseVerbose) { "[+] Edit Config completed." | Write-Host -ForegroundColor Magenta }
+        }
+        return $result
+    }
+    [void] Save() {
+        $pass = $null;
+        try {
+            Write-Host "$([RecordTbl]::caller) Save records to file: $($this.File) ..." -ForegroundColor Blue
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
+            Write-Host "$([RecordTbl]::caller) Save records " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
+        } catch {
+            throw $_.Exeption
+        } finally {
+            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
+        }
+    }
+    [void] Import([String]$FilePath) {
+        Write-Host "$([RecordTbl]::caller) Import records: $FilePath ..." -ForegroundColor Green
+        $this.Set([RecordBase]::Read($FilePath))
+        Write-Host "$([RecordTbl]::caller) Import records Complete" -ForegroundColor Green
     }
     [byte[]] ToByte() {
         return [xconvert]::Serialize($this)
@@ -2413,16 +2469,8 @@ class ArgonCage : CryptoBase {
         [ArgonCage]::Tmp.vars.Users[$username] = $hashedPassword
     }
     [void] EditConfig() {
-        if ($null -eq $this.Config) {
-            throw 'Start ArgonCage first'
-        }; [AesGCM]::caller = '[ArgonCage]'
-        $config_file = $this.Get_Config_Path()
-        if (![IO.File]::Exists($config_file)) {
-            New-Item -Type File -Path $config_file
-            #Export current config to the file
-        }
-        Write-Verbose "Editing $config_file ..."
-        code $config_file
+        if ($null -eq $this.Config) { $this.SetConfigs() }; [AesGCM]::caller = '[ArgonCage]'
+        $this.Config.Edit()
     }
     [void] SaveConfigs() {
         [RecordTbl]::caller = "[$($this.GetType().Name)]"; $this.Config.Save()
@@ -2633,9 +2681,6 @@ class ArgonCage : CryptoBase {
         }
         return $result
     }
-    static [void] ClearCredsCache() {
-        [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
-    }
     static [RecordTbl[]] ReadCredsCache() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables([RecordTbl]::new([ArgonCage]::Get_default_Config())) }
@@ -2691,6 +2736,9 @@ class ArgonCage : CryptoBase {
                 )
             )
         ) -Path ([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath) -Encoding utf8BOM
+    }
+    static [void] ClearCredsCache() {
+        [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
     }
     static [PsObject] GetSecrets() {
         if (![IO.File]::Exists([ArgonCage]::SecretStore.File) -or ($null -eq [ArgonCage]::SecretStore.Url)) { [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore() }
@@ -2772,12 +2820,6 @@ class ArgonCage : CryptoBase {
         Write-Host $("Pressed {0}{1}" -f $(if ($key.Modifiers -ne 'None') { $key.Modifiers.ToString() + '^' }), $key.Key) -ForegroundColor Green
         [System.Console]::TreatControlCAsInput = $originalTreatControlCAsInput
         return $key
-    }
-    hidden [string] Get_Config_Path() {
-        return [ArgonCage]::Get_Config_Path($this.Config.FileName)
-    }
-    hidden static [string] Get_Config_Path([string]$FileName) {
-        return [IO.Path]::Combine((Split-Path -Path ([ArgonCage]::Get_dataPath())), $FileName)
     }
     hidden [void] SetTMPvariables() {
         if ($null -eq $this.Config) { $this.SetConfigs() }
@@ -6031,13 +6073,13 @@ class CipherTron : CryptoBase {
     static [ValidateNotNullOrEmpty()][ChatSession] $ChatSession
     static hidden [ValidateNotNull()][SessionTmp] $Tmp
     static hidden [ValidateNotNullOrEmpty()][uri] $ConfigUri
-    static hidden [bool] $useverbose = $verbosePreference -eq "continue"
+    static hidden [bool] $useverbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
     static [System.Collections.ObjectModel.Collection[Byte[]]] $banners = @()
 
     CipherTron() {
         $this.Version = [CipherTron]::GetVersion()
         [CipherTron]::ChatSession = [ChatSession]::new(); $this.SetTMPvariables(); $this.SaveConfigs(); $this.ImportConfigs()
-        $this.PsObject.properties.add([psscriptproperty]::new('ConfigPath', [scriptblock]::Create({ return [CipherTron]::Get_Config_Path($this.Config.FileName) })))
+        $this.PsObject.properties.add([psscriptproperty]::new('ConfigPath', [scriptblock]::Create({ return $this.Config.File })))
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ return [CipherTron]::Get_dataPath() })))
         $this.PsObject.properties.add([psscriptproperty]::new('User', [scriptblock]::Create({ return [CipherTron]::ChatSession.User })))
         $this.PsObject.properties.add([psscriptproperty]::new('ChatUid', [scriptblock]::Create({ return [CipherTron]::ChatSession.ChatUid.ToString() })))
@@ -6511,7 +6553,7 @@ $prompt
         if ($null -eq $this.Config) {
             throw 'Start Ciphertron first'
         }; [AesGCM]::caller = '[ciphertron]'
-        $config_file = $this.Get_Config_Path()
+        $config_file = $this.Config.File
         if (![IO.File]::Exists($config_file)) {
             New-Item -Type File -Path $config_file
             #Export current config to the file
@@ -6615,12 +6657,6 @@ $prompt
     }
     static [string] Get_dataPath() {
         return [CipherTron]::Get_dataPath('CipherTron', ([ChatLog]::new().Recvr + '_Chat').Trim()).FullName
-    }
-    [string] Get_Config_Path() {
-        return [CipherTron]::Get_Config_Path($this.Config.FileName)
-    }
-    static [string] Get_Config_Path([string]$FileName) {
-        return [IO.Path]::Combine((Split-Path -Path ([CipherTron]::Get_dataPath())), $FileName)
     }
     static hidden [void] Complete([ref]$line, [ref]$cursor) {
         # Used for a code completion Shortcut
@@ -7327,18 +7363,9 @@ class RecordTbl : RecordBase {
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
         $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
     }
-    [void] Save() {
-        $pass = $null;
-        try {
-            Write-Host "$([RecordTbl]::caller) Save Config to file: $($this.File) ..." -ForegroundColor Blue
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
-            $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
-            Write-Host "$([RecordTbl]::caller) Save Config " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
-        } catch {
-            throw $_.Exeption
-        } finally {
-            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
-        }
+    [void] Edit() {
+        $this.Set([RecordTbl]::EditFile([IO.FileInfo]::new($this.File)))
+        $this.Save()
     }
     [void] Import([uri]$raw_uri) {
         try {
@@ -7351,11 +7378,6 @@ class RecordTbl : RecordBase {
         } finally {
             Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }
-    }
-    [void] Import([String]$FilePath) {
-        Write-Host "$([RecordTbl]::caller) Import Config: $FilePath ..." -ForegroundColor Green
-        $this.Set($this.Read($FilePath))
-        Write-Host "$([RecordTbl]::caller) Import Config Complete" -ForegroundColor Green
     }
     [void] Upload() {
         if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [InvalidArgumentException]::new('remote') }
