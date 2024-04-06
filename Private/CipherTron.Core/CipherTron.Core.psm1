@@ -454,51 +454,6 @@ class CryptoBase {
 
     CryptoBase() {}
 
-    static [PsObject] CreateK3Y() {
-        $key = [PSCustomObject]@{
-            User       = [CredManaged]::new()
-            Expiration = [Expiration]::new(0, 1)
-        }
-        # [ValidateNotNullOrEmpty()][keyStoreMode]hidden $StorageMode = [KeyStoreMode]::Securestring;
-        # [ValidateNotNullOrEmpty()][int]hidden $_PID = [System.Environment]::ProcessId;
-        # [ValidateNotNullOrEmpty()][securestring]hidden $UID;
-        # [ValidateNotNullOrEmpty()][byte[]]hidden $rgbSalt = [System.Text.Encoding]::UTF7.GetBytes('hR#ho"rK6FMu mdZFXp}JMY\?NC]9(.:6;>oB5U>.GkYC-JD;@;XRgXBgsEi|%MqU>_+w/RpUJ}Kt.>vWr[WZ;[e8GM@P@YKuT947Z-]ho>E2"c6H%_L2A:O5:E)6Fv^uVE; aN\4t\|(*;rPRndSOS(7& xXLRKX)VL\/+ZB4q.iY { %Ko^<!sW9n@r8ihj*=T $+Cca-Nvv#JnaZh'); #this is the default salt, change it if you want.
-        # $key.psobject.Properties.Add([psscriptproperty]::new('UID', { ConvertTo-SecureString -AsPlainText -String '' -Force }))
-
-        return $key
-    }
-    static [PsObject] CreateK3Y([Datetime]$Expiration) {
-        $key = [PSCustomObject]@{
-            User       = [CredManaged]::new([pscredential]::new($(whoami), [securestring][xconvert]::ToSecurestring([ArgonCage]::GeneratePassword(64))))
-            Expiration = [Expiration]::new($Expiration)
-        }
-        # UID = [securestring][xconvert]::ToSecurestring($key.GetK3YIdSTR());
-        return $key
-    }
-    static [PsObject] CreateK3Y([pscredential]$User, [Datetime]$Expiration) {
-        $key = [PSCustomObject]@{
-            User       = [CredManaged]::new($User)
-            Expiration = [Expiration]::new($Expiration)
-        }
-        # UID = [securestring][xconvert]::ToSecurestring($key.GetK3YIdSTR());
-        return $key
-    }
-    static [PsObject] CreateK3Y([string]$UserName, [securestring]$Password) {
-        $key = [PSCustomObject]@{
-            User       = [CredManaged]::new([pscredential]::new($UserName, $Password))
-            Expiration = [Expiration]::new(0, 1); # Default is 30 days
-        }
-        # UID = [securestring][xconvert]::ToSecurestring($key.GetK3YIdSTR());
-        return $key
-    }
-    static [PsObject] CreateK3Y([string]$UserName, [securestring]$Password, [Datetime]$Expiration) {
-        $key = [PSCustomObject]@{
-            User       = [CredManaged]::new([pscredential]::new($UserName, $Password))
-            Expiration = [Expiration]::new($Expiration)
-        }
-        # UID = [securestring][xconvert]::ToSecurestring($key.GetK3YIdSTR());
-        return $key
-    }
     static [string] GetRandomName() {
         return [CryptoBase]::GetRandomName((Get-Random -min 16 -max 80));
     }
@@ -549,7 +504,7 @@ class CryptoBase {
         return [CryptoBase]::GetKey(16);
     }
     static [byte[]] GetKey([int]$Length) {
-        $password = $null; Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([ArgonCage]::GeneratePassword()));
+        $password = $null; Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()));
         return [CryptoBase]::GetKey($password, $Length)
     }
     static [byte[]] GetKey([securestring]$password) {
@@ -598,6 +553,71 @@ class CryptoBase {
             $STR = $STR.Substring(0, $maxLength);
         }
         return $STR;
+    }
+    static [string] GeneratePassword() {
+        return [string][CryptoBase]::GeneratePassword(19);
+    }
+    static [string] GeneratePassword([int]$Length) {
+        return [string][CryptoBase]::GeneratePassword($Length, $false, $false, $false, $false);
+    }
+    static [string] GeneratePassword([int]$Length, [bool]$StartWithLetter) {
+        return [string][CryptoBase]::GeneratePassword($Length, $StartWithLetter, $false, $false, $false);
+    }
+    static [string] GeneratePassword([int]$Length, [bool]$StartWithLetter, [bool]$NoSymbols, [bool]$UseAmbiguousCharacters, [bool]$UseExtendedAscii) {
+        # https://stackoverflow.com/questions/55556/characters-to-avoid-in-automatically-generated-passwords
+        [string]$possibleCharacters = [char[]](33..126 + 161..254); $MinrL = 14; $MaxrL = 999 # Gotta have some restrictions, or one typo could endup creating insanely long or small Passwords, ex 30000 intead of 30.
+        if ($Length -lt $MinrL) { Write-Warning "Length is below the Minimum required 'Password Length'. Try $MinrL or greater."; Break }
+        if ($Length -gt $MaxrL) { Write-Warning "Length is greater the Maximum required 'Password Length'. Try $MaxrL or lower."; Break }
+        # Warn the user if they've specified mutually-exclusive options.
+        if ($NoSymbols -and $UseExtendedAscii) { Write-Warning 'The -NoSymbols parameter was also specified.  No extended ASCII characters will be used.' }
+        do {
+            $Passw0rd = [string]::Empty; $x = $null; $r = 0
+            #This person Wants a really good password, so We retry Until we get a 60% strong password.
+            do {
+                do {
+                    do {
+                        do {
+                            do {
+                                $x = [int][char][string][CryptoBase]::GetRandomSTR($possibleCharacters, 1, 1, 1);
+                                # Write-Verbose "Use character: $([char]$x) : $x"
+                            } While ($x -eq 127 -Or (!$UseExtendedAscii -and $x -gt 127))
+                            # The above Do..While loop does this:
+                            #  1. Don't allow ASCII 127 (delete).
+                            #  2. Don't allow extended ASCII, unless the user wants it.
+                        } While (!$UseAmbiguousCharacters -and ($x -In @(49, 73, 108, 124, 48, 79)))
+                        # The above loop disallows 1 (ASCII 49), I (73), l (108),
+                        # | (124), 0 (48) or O (79) -- unless the user wants those.
+                    } While ($NoSymbols -and ($x -lt 48 -Or ($x -gt 57 -and $x -lt 65) -Or ($x -gt 90 -and $x -lt 97) -Or $x -gt 122))
+                    # If the -NoSymbols parameter was specified, this loop will ensure
+                    # that the character is neither a symbol nor in the extended ASCII
+                    # character set.
+                } While ($r -eq 0 -and $StartWithLetter -and !(($x -ge 65 -and $x -le 90) -Or ($x -ge 97 -and $x -le 122)))
+                # If the -StartWithLetter parameter was specified, this loop will make
+                # sure that the first character is an upper- or lower-case letter.
+                $Passw0rd = $Passw0rd.Trim()
+                $Passw0rd += [string][char]$x; $r++
+            } until ($Passw0rd.length -eq $Length)
+        } until ([int][CryptoBase]::GetPasswordStrength($Passw0rd) -gt 60)
+        return $Passw0rd;
+    }
+    [int] static GetPasswordStrength([string]$passw0rd) {
+        # Inspired by: https://www.security.org/how-secure-is-my-password/
+        $passwordDigits = [System.Text.RegularExpressions.Regex]::new("\d", [System.Text.RegularExpressions.RegexOptions]::Compiled);
+        $passwordNonWord = [System.Text.RegularExpressions.Regex]::new("\W", [System.Text.RegularExpressions.RegexOptions]::Compiled);
+        $passwordUppercase = [System.Text.RegularExpressions.Regex]::new("[A-Z]", [System.Text.RegularExpressions.RegexOptions]::Compiled);
+        $passwordLowercase = [System.Text.RegularExpressions.Regex]::new("[a-z]", [System.Text.RegularExpressions.RegexOptions]::Compiled);
+        [int]$strength = 0; $digits = $passwordDigits.Matches($passw0rd); $NonWords = $passwordNonWord.Matches($passw0rd); $Uppercases = $passwordUppercase.Matches($passw0rd); $Lowercases = $passwordLowercase.Matches($passw0rd);
+        if ($digits.Count -ge 2) { $strength += 10 };
+        if ($digits.Count -ge 5) { $strength += 10 };
+        if ($NonWords.Count -ge 2) { $strength += 10 };
+        if ($NonWords.Count -ge 5) { $strength += 10 };
+        if ($passw0rd.Length -gt 8) { $strength += 10 };
+        if ($passw0rd.Length -ge 16) { $strength += 10 };
+        if ($Lowercases.Count -ge 2) { $strength += 10 };
+        if ($Lowercases.Count -ge 5) { $strength += 10 };
+        if ($Uppercases.Count -ge 2) { $strength += 10 };
+        if ($Uppercases.Count -ge 5) { $strength += 10 };
+        return $strength;
     }
     static [bool] IsBase64String([string]$base64) {
         return $(try { [void][Convert]::FromBase64String($base64); $true } catch { $false })
@@ -651,7 +671,7 @@ class CryptoBase {
     static [System.Security.Cryptography.Aes] GetAes() { return [CryptoBase]::GetAes(1) }
     static [System.Security.Cryptography.Aes] GetAes([int]$Iterations) {
         $salt = $null; $password = $null;
-        Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([ArgonCage]::GeneratePassword()));
+        Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()));
         Set-Variable -Name salt -Scope Local -Visibility Private -Option Private -Value $([CryptoBase]::GetSalt($Iterations));
         return [CryptoBase]::GetAes($password, $salt, $Iterations)
     }
@@ -835,8 +855,8 @@ class RecordBase {
         try {
             [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
             if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
-            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordTbl]::caller }
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordBase]::caller }
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordBase]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode([IO.File]::ReadAllText($FilePath)), $pass)))
             $cfg = [hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } })
         } catch {
@@ -854,7 +874,7 @@ class RecordBase {
         try {
             [NetworkManager]::BlockAllOutbound()
             if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -ForegroundColor Magenta }
-            [RecordTbl]::Read($File.FullName) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
+            [RecordBase]::Read($File.FullName) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
             $process = [System.Diagnostics.Process]::new()
             $process.StartInfo.FileName = 'nvim'
@@ -887,10 +907,10 @@ class RecordBase {
     [void] Save() {
         $pass = $null;
         try {
-            Write-Host "$([RecordTbl]::caller) Save records to file: $($this.File) ..." -ForegroundColor Blue
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            Write-Host "$([RecordBase]::caller) Save records to file: $($this.File) ..." -ForegroundColor Blue
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordBase]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
-            Write-Host "$([RecordTbl]::caller) Save records " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
+            Write-Host "$([RecordBase]::caller) Save records " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
         } catch {
             throw $_.Exeption
         } finally {
@@ -898,9 +918,9 @@ class RecordBase {
         }
     }
     [void] Import([String]$FilePath) {
-        Write-Host "$([RecordTbl]::caller) Import records: $FilePath ..." -ForegroundColor Green
+        Write-Host "$([RecordBase]::caller) Import records: $FilePath ..." -ForegroundColor Green
         $this.Set([RecordBase]::Read($FilePath))
-        Write-Host "$([RecordTbl]::caller) Import records Complete" -ForegroundColor Green
+        Write-Host "$([RecordBase]::caller) Import records Complete" -ForegroundColor Green
     }
     [byte[]] ToByte() {
         return [xconvert]::Serialize($this)
@@ -1361,19 +1381,6 @@ class xconvert : System.ComponentModel.TypeConverter {
         } else {
             return $PSObject
         }
-    }
-    static [PSCustomObject] ToPSCustomObject($InputObject) {
-        $OutputObject = [PSCustomObject]::new()
-        $InputObject.PSObject.Properties | ForEach-Object {
-            $PropertyName = $_.Name
-            $PropertyValue = $_.Value
-            if ($_.TypeNameOfValue -is 'Deserialized.System.Management.Automation.PSCustomObject') {
-                $OutputObject | Add-Member -Name $PropertyName -MemberType NoteProperty -Value ([PSObjectHelper]::ConvertToPSCustomObject($PropertyValue))
-            } else {
-                $OutputObject | Add-Member -Name $PropertyName -MemberType NoteProperty -Value $PropertyValue
-            }
-        }
-        return $OutputObject
     }
     static [byte[]] ToProtected([byte[]]$Bytes) {
         $p = [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
@@ -2263,7 +2270,7 @@ class FileMonitor {
         return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -ForegroundColor Green })
     }
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File, [scriptblock]$Action) {
-        [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo][ArgonCage]::GetUnResolvedPath($File)
+        [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo][CryptoBase]::GetUnResolvedPath($File)
         if (![IO.File]::Exists($File.FullName)) {
             throw "The file does not exist"
         }
@@ -2385,732 +2392,6 @@ class SecretStore {
         )
     }
 }
-#region    PasswordManager
-# .SYNOPSIS
-#     A simple cli tool that uses state-of-the-art encryption to save secrets.
-# .DESCRIPTION
-#     Argon2 KDF is widely considered one of the most secure and modern method for deriving cryptographic keys from passwords.
-#     It is designed to be memory-hard, making it extremely resistant to GPU/ASIC cracking attacks.
-#     The goal is to achieve Military-Grade Encryption without leaving the cli.
-# .NOTES
-#     Information or caveats about the function e.g. 'This function is not supported in Linux'
-# .LINK
-#     https://github.com/alainQtec/argoncage
-# .EXAMPLE
-#     [ArgonCage]::New()
-#     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
-class ArgonCage : CryptoBase {
-    [ValidateNotNullOrEmpty()][RecordTbl] $Config
-    [ValidateNotNullOrEmpty()][version] $Version
-    static hidden [ValidateNotNull()][SessionTmp] $Tmp
-    static [SecretStore] $SecretStore = [SecretStore]::new("secret_Info")
-    static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
-    static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
-
-    ArgonCage() {
-        $this.Version = [ArgonCage]::GetVersion()
-        $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ $path = [ArgonCage]::Get_dataPath('ArgonCage', 'Data'); [SecretStore]::DataPath = [IO.Path]::Combine($path, 'secrets'); return $path })))
-        $this.SetTMPvariables(); $this.SaveConfigs() # $this.ImportConfigs()
-        $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
-    }
-    static [void] ShowMenu() {
-        [ArgonCage]::GetSecretStore()
-        [ArgonCage]::WriteBanner()
-        # code for menu goes here ...
-    }
-    static [void] WriteBanner() {
-        if ($null -eq [ArgonCage]::banners -or ([ArgonCage]::banners.Count -eq 0)) {
-            [void][ArgonCage]::banners.Add([CliArt]::new('H4sIAAAAAAAAA7VXaXOiQBD9ThU/wlVLjGGNxuBNopZJFmIw3B5RdzUEchiv/P+dwaiAAw6m8mWqeoQ3j9dvulvLzLwOZHEcm3HNyEXbMjPmY6iQJODGAmywkmW24iNFepg2lU8ufb0OheHlKhiMJLAOyybz34Eoi5Z5X00rCn+mDbrJWMIyhSKnqDfGyA5JwrURXdmPy9MkPQ+nxXbDSB8r57J3Kr7MPQRxQ5JQtVQhEvZsJ1vMjIBQUdnR0E1gMOhSHwqUM/vbcCUQhIq+KOzTh2KXpl4feuQM4IuZkeay7hFM/uifpzDcyeT25G6VnnHVhVqEdwPKnfhvX5//8XxrsJxY6gZC7NsxzE1F5CZQzmPc4IbA4+vLliSOfnvD9lBGFIlWa7AUmMjLDisZSfTGucQLqFXLmr2BDgXG64btrwWUnCHV/YIIX6uc7sR//GATwHIDunYeSd+3jwTw9WWLzsiPyenD1rcJ4Kv7M3KGVRfD4Bt1efU5YfGz1sTiDaaWf6GNTqdYfpqQxH13Um60Z9F4W7us9sX8eXPQ2VJ5tHFi/NXQX5qtnEFfw9bVoXjGXaQmYZJKfZTQx/YaaZwKvgw5XxyZ1EMGR/H1ZXvYF9++I4eoALZYPfXus02BYS77FIXjDyMllZPMLiQJz0boMGLLeXiMR6sLp9sKDSFAz5CnQzGGhgDzmVK819ugZ0QKltlYDZHWWsMFgcFB3AfMXXIQfPUl7RzeFZnRof3n3nGtiMynrs1EB1in3uwjRtcHjzu3YLtJt0rfylJL+OXLdtMQi4uZPGD/vcfXBFaGPOgnhZOO64BKZt2gy6eP4ABqCR+OgPlCXtBm3VGhQoPtbmqk7gHzvWut8mu2Ypm5xI39hSQB3dvZcwOc5fW/EQkKVgNh6kkW306c/5QkVYlyo8plDmqxgQPoGQ+YvvauE8z9t+HLWkG1YVplu0m45OGSS4mv89FdnNJnWom5YvV8tlcjCV3rnVLCzUj4FDhTrgrcvMsKvDFfSRpvsGC5ncC3KRsCLlm41LZhgyRs4HbuIkbp7+Z7Y4cuTsZvZyAdLUYa/wf3K1M5Uw8AAA=='))
-        }
-        [ArgonCage]::banners[(Get-Random (0..([ArgonCage]::banners.Count - 1)))].Tostring() | Write-Host -ForegroundColor Magenta
-        [void][cli]::Write('[!] https://github.com/alainQtec/argoncage', [ConsoleColor]::Red)
-    }
-    [void] RegisterUser() {
-        # TODO: FINSISH this .. I'm tir3d!
-        # store the encrypted(user+ hashedPassword) s in a file. ie:
-        # user1:HashedPassword1 -encrypt-> 3dsf#s3s#$3!@dd*34d@dssxb
-        # user2:HashedPassword2 -encrypt-> dds#$3!@dssd*sf#s343dfdsf
-    }
-    [bool] Login([string]$UserName, [securestring]$Password) {
-        # This method authenticates the user by verifying the supplied username and password.
-        # Todo: replace this with a working authentication mechanism.
-        [ValidateNotNullOrEmpty()][string]$username = $username
-        [ValidateNotNullOrEmpty()][securestring]$password = $password
-        $valid_username = "example_user"
-        $valid_password = "example_password"
-        if ($username -eq $valid_username -and $password -eq $valid_password) {
-            return $true
-        } else {
-            return $false
-        }
-    }
-    static [void] LoadUsers([string]$UserFile) {
-        [ValidateNotNullOrEmpty()][string]$UserFile = $UserFile
-        # Reads the user file and loads the usernames and hashed passwords into a hashtable.
-        if (Test-Path $UserFile) {
-            $lines = Get-Content $UserFile
-            foreach ($line in $lines) {
-                $parts = $line.Split(":")
-                $username = $parts[0]
-                $password = $parts[1]
-                [ArgonCage]::Tmp.vars.Users[$username] = $password
-            }
-        }
-    }
-    static [void] RegisterUser([string]$username, [securestring]$password) {
-        [ValidateNotNullOrEmpty()][string]$username = $username
-        [ValidateNotNullOrEmpty()][securestring]$password = $password
-        # Registers a new user with the specified username and password.
-        # Hashes the password and stores it in the user file.
-        $UserFile = ''
-        $hashedPassword = $password | ConvertFrom-SecureString
-        $line = "{0}:{1}" -f $username, $hashedPassword
-        Add-Content $UserFile $line
-        [ArgonCage]::Tmp.vars.Users[$username] = $hashedPassword
-    }
-    [void] EditConfig() {
-        if ($null -eq $this.Config) { $this.SetConfigs() }; [AesGCM]::caller = '[ArgonCage]'
-        $this.Config.Edit()
-    }
-    [void] SaveConfigs() {
-        [RecordTbl]::caller = "[$($this.GetType().Name)]"; $this.Config.Save()
-    }
-    [void] SyncConfigs() {
-        # Imports remote configs into current ones, then uploads the updated version to github gist
-        # Compare REMOTE's lastWritetime with [IO.File]::GetLastWriteTime($this.File)
-        $this.ImportConfig($this.Config.Remote); $this.SaveConfigs()
-    }
-    [void] ImportConfigs() {
-        [RecordTbl]::caller = "[$($this.GetType().Name)]"; [void]$this.Config.Import($this.Config.File)
-    }
-    [void] ImportConfigs([uri]$raw_uri) {
-        # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        [RecordTbl]::caller = "[$($this.GetType().Name)]"; $this.Config.Import($raw_uri)
-    }
-    [bool] DeleteConfigs() {
-        return [bool]$(
-            try {
-                $configFiles = ([GitHub]::GetTokenFile() | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File, ($this.DataPath | Get-ChildItem -File -Recurse).FullName
-                $configFiles.Foreach({ Remove-Item -Path $_ -Force -Verbose });
-                $true
-            } catch { $false }
-        )
-    }
-    [void] SetConfigs() { $this.SetConfigs([string]::Empty, $false) }
-    [void] SetConfigs([string]$ConfigFile) { $this.SetConfigs($ConfigFile, $true) }
-    [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
-    [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
-        [AesGCM]::caller = "[$($this.GetType().Name)]"
-        if ($null -eq $this.Config) { $this.Config = [RecordTbl]::new([ArgonCage]::Get_default_Config()) }
-        if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [ArgonCage]::GetUnResolvedPath($ConfigFile) }
-        if (![IO.File]::Exists($this.Config.File)) {
-            if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
-                throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File)'")
-            }; [void](New-Item -ItemType File -Path $this.Config.File)
-        }
-    }
-    # Method to validate the password: This Just checks if its a good enough password
-    static [bool] ValidatePassword([SecureString]$password) {
-        $IsValid = $false; $minLength = 8; $handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
-        try {
-            Add-Type -AssemblyName System.Runtime.InteropServices
-            Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToString($Password));
-            Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
-            # Set the required character types
-            $requiredCharTypes = [System.Text.RegularExpressions.Regex]::Matches("$Passw0rd", "[A-Za-z]|[0-9]|[^A-Za-z0-9]") | Select-Object -ExpandProperty Value
-            # Check if the password meets the minimum length requirement and includes at least one of each required character type
-            $IsValid = ($Passw0rd.Length -ge $minLength -and $requiredCharTypes.Count -ge 3)
-        } catch {
-            throw $_.Exeption
-        } finally {
-            Remove-Variable Passw0rd -Force -ErrorAction SilentlyContinue
-            # Zero out the memory used by the variable.
-            [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
-            Remove-Variable handle -Force -ErrorAction SilentlyContinue
-        }
-        return $IsValid
-    }
-    static [string] GeneratePassword() {
-        return [string][ArgonCage]::GeneratePassword(19);
-    }
-    static [string] GeneratePassword([int]$Length) {
-        return [string][ArgonCage]::GeneratePassword($Length, $false, $false, $false, $false);
-    }
-    static [string] GeneratePassword([int]$Length, [bool]$StartWithLetter) {
-        return [string][ArgonCage]::GeneratePassword($Length, $StartWithLetter, $false, $false, $false);
-    }
-    static [string] GeneratePassword([int]$Length, [bool]$StartWithLetter, [bool]$NoSymbols, [bool]$UseAmbiguousCharacters, [bool]$UseExtendedAscii) {
-        # https://stackoverflow.com/questions/55556/characters-to-avoid-in-automatically-generated-passwords
-        [string]$possibleCharacters = [char[]](33..126 + 161..254); $MinrL = 14; $MaxrL = 999 # Gotta have some restrictions, or one typo could endup creating insanely long or small Passwords, ex 30000 intead of 30.
-        if ($Length -lt $MinrL) { Write-Warning "Length is below the Minimum required 'Password Length'. Try $MinrL or greater."; Break }
-        if ($Length -gt $MaxrL) { Write-Warning "Length is greater the Maximum required 'Password Length'. Try $MaxrL or lower."; Break }
-        # Warn the user if they've specified mutually-exclusive options.
-        if ($NoSymbols -and $UseExtendedAscii) { Write-Warning 'The -NoSymbols parameter was also specified.  No extended ASCII characters will be used.' }
-        do {
-            $Passw0rd = [string]::Empty; $x = $null; $r = 0
-            #This person Wants a really good password, so We retry Until we get a 60% strong password.
-            do {
-                do {
-                    do {
-                        do {
-                            do {
-                                $x = [int][char][string][CryptoBase]::GetRandomSTR($possibleCharacters, 1, 1, 1);
-                                # Write-Verbose "Use character: $([char]$x) : $x"
-                            } While ($x -eq 127 -Or (!$UseExtendedAscii -and $x -gt 127))
-                            # The above Do..While loop does this:
-                            #  1. Don't allow ASCII 127 (delete).
-                            #  2. Don't allow extended ASCII, unless the user wants it.
-                        } While (!$UseAmbiguousCharacters -and ($x -In @(49, 73, 108, 124, 48, 79)))
-                        # The above loop disallows 1 (ASCII 49), I (73), l (108),
-                        # | (124), 0 (48) or O (79) -- unless the user wants those.
-                    } While ($NoSymbols -and ($x -lt 48 -Or ($x -gt 57 -and $x -lt 65) -Or ($x -gt 90 -and $x -lt 97) -Or $x -gt 122))
-                    # If the -NoSymbols parameter was specified, this loop will ensure
-                    # that the character is neither a symbol nor in the extended ASCII
-                    # character set.
-                } While ($r -eq 0 -and $StartWithLetter -and !(($x -ge 65 -and $x -le 90) -Or ($x -ge 97 -and $x -le 122)))
-                # If the -StartWithLetter parameter was specified, this loop will make
-                # sure that the first character is an upper- or lower-case letter.
-                $Passw0rd = $Passw0rd.Trim()
-                $Passw0rd += [string][char]$x; $r++
-            } until ($Passw0rd.length -eq $Length)
-        } until ([int][ArgonCage]::GetPasswordStrength($Passw0rd) -gt 60)
-        return $Passw0rd;
-    }
-    [int] static GetPasswordStrength([string]$passw0rd) {
-        # Inspired by: https://www.security.org/how-secure-is-my-password/
-        $passwordDigits = [System.Text.RegularExpressions.Regex]::new("\d", [System.Text.RegularExpressions.RegexOptions]::Compiled);
-        $passwordNonWord = [System.Text.RegularExpressions.Regex]::new("\W", [System.Text.RegularExpressions.RegexOptions]::Compiled);
-        $passwordUppercase = [System.Text.RegularExpressions.Regex]::new("[A-Z]", [System.Text.RegularExpressions.RegexOptions]::Compiled);
-        $passwordLowercase = [System.Text.RegularExpressions.Regex]::new("[a-z]", [System.Text.RegularExpressions.RegexOptions]::Compiled);
-        [int]$strength = 0; $digits = $passwordDigits.Matches($passw0rd); $NonWords = $passwordNonWord.Matches($passw0rd); $Uppercases = $passwordUppercase.Matches($passw0rd); $Lowercases = $passwordLowercase.Matches($passw0rd);
-        if ($digits.Count -ge 2) { $strength += 10 };
-        if ($digits.Count -ge 5) { $strength += 10 };
-        if ($NonWords.Count -ge 2) { $strength += 10 };
-        if ($NonWords.Count -ge 5) { $strength += 10 };
-        if ($passw0rd.Length -gt 8) { $strength += 10 };
-        if ($passw0rd.Length -ge 16) { $strength += 10 };
-        if ($Lowercases.Count -ge 2) { $strength += 10 };
-        if ($Lowercases.Count -ge 5) { $strength += 10 };
-        if ($Uppercases.Count -ge 2) { $strength += 10 };
-        if ($Uppercases.Count -ge 5) { $strength += 10 };
-        return $strength;
-    }
-    # Method to save the password token (like a custom hash thing) to sql database
-    static [void] SavePasswordToken([string]$username, [SecureString]$password, [string]$connectionString) {
-        $passw0rdHash = [string]::Empty
-        # Hash the password using the SHA-3 algorithm
-        if ('System.Security.Cryptography.SHA3Managed' -is 'type') {
-            $passw0rdHash = (New-Object System.Security.Cryptography.SHA3Managed).ComputeHash([System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($password)))
-        } else {
-            # Hash the password using an online SHA-3 hash generator
-            $passw0rdHash = ((Invoke-WebRequest -Method Post -Uri "https://passwordsgenerator.net/sha3-hash-generator/" -Body "text=$([xconvert]::Tostring($password))").Content | ConvertFrom-Json).sha3
-        }
-        # Connect to the database
-        $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-        $connection.Open()
-
-        # Create a SQL command to update the password hash in the database
-        $command = New-Object System.Data.SqlClient.SqlCommand("UPDATE Users SET PasswordHash = @PasswordHash WHERE Username = @Username", $connection)
-        $command.Parameters.AddWithValue("@Username", $username)
-        $command.Parameters.AddWithValue("@PasswordHash", $passw0rdHash)
-
-        # Execute the command
-        $command.ExecuteNonQuery()
-
-        # Close the connection
-        $connection.Close()
-    }
-    # Method to retieve the passwordHash from sql database
-    # Create an instance of the PasswordManager class
-    # $manager = [ArgonCage]::new("username", "")
-    # Load the password hash from the database
-    # $manager.LoadPasswordHash("username", "Server=localhost;Database=MyDatabase;Trusted_Connection=True;")
-    static [string] LoadPasswordToken([string]$username, [string]$connectionString) {
-        # Connect to the database
-        $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-        $connection.Open()
-
-        # Create a SQL command to retrieve the password hash from the database
-        $command = New-Object System.Data.SqlClient.SqlCommand("SELECT PasswordHash FROM Users WHERE Username = @Username", $connection)
-        $command.Parameters.AddWithValue("@Username", $username)
-
-        # Execute the command and retrieve the password hash
-        $reader = $command.ExecuteReader()
-        $reader.Read()
-        $Passw0rdHash = $reader["PasswordHash"]
-
-        # Close the connection
-        $connection.Close()
-        return $Passw0rdHash
-    }
-    static [SecretStore] GetSecretStore() {
-        if ($null -eq [ArgonCage]::SecretStore.Url) {
-            [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore([ArgonCage]::SecretStore.Name)
-        }
-        return [ArgonCage]::SecretStore
-    }
-    static [SecretStore] GetSecretStore([string]$FileName) {
-        $result = [SecretStore]::new($FileName); $__FilePath = [ArgonCage]::GetUnResolvedPath($FileName)
-        $result.File = $(if ([IO.File]::Exists($__FilePath)) {
-                Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -ForegroundColor Green
-                Get-Item $__FilePath
-            } else {
-                [ArgonCage]::SecretStore.File
-            }
-        )
-        $result.Name = [IO.Path]::GetFileName($result.File.FullName)
-        $result.Url = $(if ($null -eq [ArgonCage]::SecretStore.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::SecretStore.Name).raw_url) } else { [ArgonCage]::SecretStore.Url })
-        if (![IO.File]::Exists($result.File.FullName)) {
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -ForegroundColor Magenta }
-            [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
-            $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
-            $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
-            $Progress_Msg = "[+] Downloading secrets to {0}" -f $result.File.FullName
-            [NetworkManager]::DownloadOptions.Set(@{
-                    ProgressBarLength = $Progress_Msg.Length - 7
-                    ProgressMessage   = $Progress_Msg
-                }
-            )
-            $result.File = [NetworkManager]::DownloadFile($result.Url, $result.File.FullName)
-            [NetworkManager]::DownloadOptions.Set(@{
-                    ProgressBarLength = $og_PbLength
-                    ProgressMessage   = $og_pbMsg
-                }
-            )
-            [Console]::Write([Environment]::NewLine)
-        }
-        return $result
-    }
-    static [RecordTbl[]] ReadCredsCache() {
-        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables([RecordTbl]::new([ArgonCage]::Get_default_Config())) }
-        $sc = [ArgonCage]::Tmp.vars.SessionConfig
-        if (!$sc.KeepCredsCache) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('KeepCredsCache', `$true)" }
-        return [ArgonCage]::ReadCredsCache($sc.CachedCredsPath)
-    }
-    static [RecordTbl[]] ReadCredsCache([string]$FilePath) {
-        $credspath = $FilePath | Split-Path
-        if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
-        $ca = @(); if (![IO.File]::Exists($FilePath)) { return $ca }
-        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
-        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($FilePath)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1)
-        $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordTbl]::new([xconvert]::ToHashTable($_)) })
-        return $ca
-    }
-    static [RecordTbl[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName) {
-        return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $false)
-    }
-    static [RecordTbl[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName, [bool]$Force) {
-        return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $Force)
-    }
-    static [RecordTbl[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName, [bool]$Force) {
-        [ValidateNotNullOrWhiteSpace()][string]$TagName = $TagName
-        [ValidateNotNullOrEmpty()][pscredential]$Credential = $Credential
-        $results = [ArgonCage]::ReadCredsCache()
-        $IsNewTag = $TagName -notin $results.Tag
-        if ($IsNewTag) {
-            if (!$Force) {
-                Throw [System.InvalidOperationException]::new("CACHE_NOT_FOUND! Please make sure the tag already exist, or use -Force to auto add.")
-            }
-            Write-Verbose "Create new file: '$([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath)'."
-        }
-        Write-Verbose "$(if ($IsNewTag) { "Adding new" } else { "Updating" }) tag: '$TagName' ..."
-        if ($results.Count -eq 0 -or $IsNewTag) {
-            $results += [RecordTbl]::new(@{
-                    User  = $Credential.UserName
-                    Tag   = $TagName
-                    Token = [HKDF2]::GetToken($Credential.Password)
-                }
-            )
-        } else {
-            $results.Where({ $_.Tag -eq $TagName }).Set('Token', [HKDF2]::GetToken($Credential.Password))
-        }
-        [ArgonCage]::SaveCredsCache($results)
-        return $results
-    }
-    static [void] SaveCredsCache([RecordTbl[]]$cacheOb) {
-        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
-        Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
-                    [System.Text.Encoding]::UTF8.GetBytes([string]($cacheOb | ConvertTo-Json)),
-                    $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1
-                )
-            )
-        ) -Path ([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath) -Encoding utf8BOM
-    }
-    static [void] ClearCredsCache() {
-        [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
-    }
-    static [PsObject] GetSecrets() {
-        if (![IO.File]::Exists([ArgonCage]::SecretStore.File) -or ($null -eq [ArgonCage]::SecretStore.Url)) { [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore() }
-        return [ArgonCage]::GetSecrets([ArgonCage]::SecretStore.File)
-    }
-    static [PsObject] GetSecrets([String]$Path) {
-        # $CachedCreds = [ArgonCage]::ReadCredsCache(); $TagIsCached = $CachedCreds.Tag -contains $TagName
-        $password = [AesGCM]::GetPassword("[ArgonCage] password to read secrets")
-        return [ArgonCage]::GetSecrets($Path, $password, [string]::Empty)
-    }
-    static [PsObject] GetSecrets([String]$Path, [securestring]$password, [string]$Compression) {
-        [ValidateNotNullOrEmpty()][string]$Path = [ArgonCage]::GetResolvedPath($Path)
-        if (![IO.File]::Exists($Path)) { throw [System.IO.FileNotFoundException]::new("File '$path' does not exist") }
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
-        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)
-        return $(ConvertFrom-Csv ([System.Text.Encoding]::UTF8.GetString($da).Split('" "'))) | Select-Object -Property @{ l = 'link'; e = { if ($_.link.Contains('"')) { $_.link.replace('"', '') } else { $_.link } } }, 'user', 'pass'
-    }
-    static [void] EditSecrets() {
-        if (![IO.File]::Exists([ArgonCage]::SecretStore.File.FullName) -or ($null -eq [ArgonCage]::SecretStore.Url)) { [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore() }
-        [ArgonCage]::EditSecrets([ArgonCage]::SecretStore.File.FullName)
-    }
-    static [void] EditSecrets([String]$Path) {
-        $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
-        try {
-            [NetworkManager]::BlockAllOutbound()
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets started .." | Write-Host -ForegroundColor Magenta }
-            [ArgonCage]::GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
-            Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
-            $process = [System.Diagnostics.Process]::new()
-            $process.StartInfo.FileName = 'nvim'
-            $process.StartInfo.Arguments = $outFile.FullName
-            $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
-            $process.Start(); $fswatcher = [FileMonitor]::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
-            if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
-            $private:secrets = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
-        } finally {
-            [NetworkManager]::UnblockAllOutbound()
-            if ($fswatcher) { $fswatcher.Dispose() }
-            if ($process) {
-                "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
-                        $process.Kill($true)
-                        "closed"
-                    } else {
-                        "exited"
-                    }
-                ) | Write-Host -ForegroundColor Green
-                $process.Close()
-                $process.Dispose()
-            }
-            Remove-Item $outFile.FullName -Force
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -ForegroundColor Magenta }
-            if ($null -ne $secrets) { [ArgonCage]::UpdateSecrets($secrets, $Path) }
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets completed." | Write-Host -ForegroundColor Magenta }
-        }
-    }
-    static [void] UpdateSecrets([psObject]$InputObject, [string]$outFile) {
-        $password = [AesGCM]::GetPassword("[ArgonCage] password to save secrets")
-        [ArgonCage]::UpdateSecrets($InputObject, [ArgonCage]::GetUnResolvedPath($outFile), $password, '')
-    }
-    static [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Updating secrets .." | Write-Host -ForegroundColor Green }
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
-        [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
-    }
-    static [securestring] ResolveSecret([securestring]$secret, [string]$cacheTag) {
-        $cache = [ArgonCage]::ReadCredsCache().Where({ $_.Tag -eq $cacheTag })
-        if ($null -eq $cache) {
-            throw "Secret not found in cache. Please make sure creds caching is enabled."
-        }
-        $TokenSTR = $cache.Token
-        return [HKDF2]::Resolve($secret, $TokenSTR)
-    }
-    static [ConsoleKeyInfo] ReadInput() {
-        $originalTreatControlCAsInput = [System.Console]::TreatControlCAsInput
-        if (![console]::KeyAvailable) { [System.Console]::TreatControlCAsInput = $true }
-        $key = [ConsoleKeyInfo]::new(' ', [System.ConsoleKey]::None, $false, $false, $false)
-        Write-Host "Press a key :)" -ForegroundColor Green
-        [FileMonitor]::Keys += $key = [System.Console]::ReadKey($true)
-        Write-Host $("Pressed {0}{1}" -f $(if ($key.Modifiers -ne 'None') { $key.Modifiers.ToString() + '^' }), $key.Key) -ForegroundColor Green
-        [System.Console]::TreatControlCAsInput = $originalTreatControlCAsInput
-        return $key
-    }
-    hidden [void] SetTMPvariables() {
-        if ($null -eq $this.Config) { $this.SetConfigs() }
-        [ArgonCage]::SetTMPvariables($this.Config)
-    }
-    static hidden [void] SetTMPvariables([RecordTbl]$Config) {
-        # Sets default variables and stores them in $this::Tmp.vars
-        # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
-        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        [ArgonCage]::Tmp.vars.Set(@{
-                Users         = @{}
-                Host_Os       = [ArgonCage]::Get_Host_Os()
-                ExitCode      = 0
-                OfflineMode   = (Test-Connection github.com -Count 1).status -ne "Success"
-                SessionId     = ''
-                SessionConfig = $Config
-                Finish_reason = ''
-                OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
-                UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-                UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
-            }
-        )
-    }
-    static hidden [hashtable] Get_default_Config() {
-        $Config_FileName = 'Config.enc'
-        $default_DataDir = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
-        $default_Config = @{
-            Remote          = ''
-            FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
-            File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine($default_DataDir, $Config_FileName))
-            GistUri         = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
-            ERROR_NAMES     = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
-            NoApiKeyHelp    = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
-            ThrowNoApiKey   = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
-            UsageHelp       = "Usage:`nHere's an example of how to use this Password manager:`n   `$pm = [ArgonCage]::new()`n   `$pm.login()`n`nAnd make sure you have Internet."
-            KeepCredsCache  = $true
-            CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "CredsCache.enc")
-            LastWriteTime   = [datetime]::Now
-        }
-        try {
-            Write-Host "[ArgonCage] Get Remote gist uri for config ..." -ForegroundColor Blue
-            $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
-            if ($?) {
-                $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)
-            }
-            Write-Host "[ArgonCage] Get Remote gist uri " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
-        } catch {
-            Write-Host "[ArgonCage] Get Remote gist uri Failed!" -ForegroundColor Red
-            Write-Host "            $($_.Exception.PsObject.TypeNames[0]) $($_.Exception.Message)" -ForegroundColor Red
-        }
-        return $default_Config
-    }
-    static [version] GetVersion() {
-        # Returns the current version of the chatbot.
-        return [version]::New($script:localizedData.ModuleVersion)
-    }
-    static [bool] IsCTRLQ([System.ConsoleKeyInfo]$key) {
-        return ($key.modifiers -band [consolemodifiers]::Control) -and ($key.key -eq 'q')
-    }
-}
-
-
-# .SYNOPSIS
-#     A custom HMAC Key Derivation class (System.Security.Cryptography.HKDF) using PBKDF2 algorithm.
-# .DESCRIPTION
-#     Here's a basic scenario of why I use this:
-#     IRL when a user inputs a password, instead of storing the password in cleartext, we hash the password and store the username and hash pair in the database table.
-#     When the user logs in, we hash the input password and compare the calculated hash with what we have in the database.
-#     Cool and that's what this class does but also checks if the password has expired or not.
-#
-#     The token basically stores expiration date and hash of the Password.
-#     but the token is encryptd /jumbled and can only be read if the InputPassword's hash matches the CalculatedHash.
-#
-#     This class can also be used to check the validity of the input password before deriving it.
-# .EXAMPLE
-#
-#     The main use is to never store the actual input password, rather keep its hash
-#     # STEP 1. Create Hash and Store it somewhere secure.
-#     $hashSTR = [HKDF2]::GetToken((Read-Host -Prompt "password" -AsSecureString))
-#     $hashSTR | Out-File ReallySecureFilePath; # keep the hash string it in a file Or in a database
-#
-#     # STEP 2. Use the Hash to verify if $InputPassword is legit, then login/orNot
-#     [SecureString]$InputPassword = Read-Host -Prompt "password" -AsSecureString
-#     $IsValidPasswd = [HKDF2]::VerifyToken((cat ReallySecureFilePath), $InputPassword)
-#
-#    Real Use case:
-#    # STEP 1.
-#    $InputPass = Read-Host -Prompt "Password to encrypt" -AsSecureString
-#    [HKDF2]::GetToken($InputPass) | Out-File ReallySecureFilePath; # keep the hash string it in a file Or in a database
-#    $Password2Use = [HKDF2]::Resolve($InputPass, (cat ReallySecureFilePath)) # get derived password, and use itinstead of input password
-#
-#    # STEP 2.
-#    $Password2Use = [HKDF2]::Resolve((Read-Host -Prompt "password ro decrypt" -AsSecureString), (cat ReallySecureFilePath))
-# .NOTES
-#     Inspired by: - https://asecuritysite.com/powershell/enc07
-#                  - https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
-class HKDF2 {
-    [byte[]] $Salt
-    [int] $IterationCount
-    [int] $BlockSize
-    [UInt32] $BlockIndex
-    [byte[]] $BufferBytes
-    [int] $BufferStartIndex
-    [int] $BufferEndIndex
-    [System.Security.Cryptography.HMAC] $Algorithm
-
-    HKDF2() {}
-    HKDF2([byte[]]$bytes) {
-        $ob = [HKDF2]::Create($bytes)
-        $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
-    }
-    HKDF2([securestring]$secretKey) {
-        $ob = [HKDF2]::Create($secretKey)
-        $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
-    }
-    HKDF2([securestring]$secretKey, [byte[]]$salt) {
-        $ob = [HKDF2]::Create($secretKey, $salt)
-        $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
-    }
-    [byte[]] GetBytes() {
-        return $this.GetBytes(32)
-    }
-    [byte[]] GetBytes([int]$count) {
-        # Returns a pseudo-random key. $count is number of bytes to return.
-        $result = [byte[]]::New($count)
-        $resultOffset = 0
-        $bufferCount = $this.BufferEndIndex - $this.BufferStartIndex
-
-        if ($bufferCount -gt 0) {
-            if ($count -lt $bufferCount) {
-                [Buffer]::BlockCopy($this.BufferBytes, $this.BufferStartIndex, $result, 0, $count)
-                $this.BufferStartIndex += $count
-                return $result
-            }
-            [Buffer]::BlockCopy($this.BufferBytes, $this.BufferStartIndex, $result, 0, $bufferCount)
-            $this.BufferStartIndex = $this.BufferEndIndex = 0
-            $resultOffset += $bufferCount
-        }
-        while ($resultOffset -lt $count) {
-            $needCount = $count - $resultOffset
-            $this.BufferBytes = $this.GetHashBuffer()
-            if ($needCount -gt $this.BlockSize) {
-                [Buffer]::BlockCopy($this.BufferBytes, 0, $result, $resultOffset, $this.BlockSize)
-                $resultOffset += $this.BlockSize
-            } else {
-                [Buffer]::BlockCopy($this.BufferBytes, 0, $result, $resultOffset, $needCount)
-                $this.BufferStartIndex = $needCount
-                $this.BufferEndIndex = $this.BlockSize
-                return $result
-            }
-        }
-        return $result
-    }
-    [byte[]] GetHashBuffer() {
-        $hash1Input = [byte[]]::New(($this.Salt.Length + 4))
-        [Buffer]::BlockCopy($this.Salt, 0, $hash1Input, 0, $this.Salt.Length)
-        [Buffer]::BlockCopy($this.GetBytesFromInt($this.BlockIndex), 0, $hash1Input, $this.Salt.Length, 4)
-        $hash1 = $this.Algorithm.ComputeHash($hash1Input)
-
-        $finalHash = $hash1
-        for ($i = 2; $i -le $this.IterationCount; $i++) {
-            $hash1 = $this.Algorithm.ComputeHash($hash1, 0, $hash1.Length)
-            for ($j = 0; $j -lt $this.BlockSize; $j++) {
-                $finalHash[$j] = [byte]($finalHash[$j] -bxor $hash1[$j])
-            }
-        }
-        if ($this.BlockIndex -eq [UInt32]::MaxValue) { throw "Derived key too long." }
-        $this.BlockIndex += 1
-        return $finalHash
-    }
-    [byte[]] GetBytesFromInt([UInt32] $i) {
-        $bytes = [BitConverter]::GetBytes($i)
-        if ([BitConverter]::IsLittleEndian) {
-            return @($bytes[3], $bytes[2], $bytes[1], $bytes[0])
-        } else {
-            return $bytes
-        }
-    }
-    static [HKDF2] Create([byte[]]$bytes) {
-        $dsalt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
-        return [HKDF2]::Create($bytes, $dsalt)
-    }
-    static [HKDF2] Create([securestring]$secretKey) {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($secretKey))
-        $dsalt = [cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
-        return [HKDF2]::Create($bytes, $dsalt)
-    }
-    static [HKDF2] Create([byte[]]$secretKey, [byte[]]$salt) {
-        return [HKDF2]::Create([byte[]]$secretKey, [System.Security.Cryptography.HMACSHA256]::new(), [byte[]]$salt, 10000)
-    }
-    static [HKDF2] Create([securestring]$secretKey, [byte[]]$salt) {
-        return [HKDF2]::Create([System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($secretKey)), $salt)
-    }
-    static [HKDF2] Create([byte[]]$secretKey, [System.Security.Cryptography.HMAC]$algorithm, [byte[]]$salt, [int]$iterations) {
-        if (!$algorithm) { throw "Algorithm cannot be null." }
-        if (!$salt) { throw "Salt cannot be null." }
-        if (!$secretKey) { throw "secretKey cannot be null." }
-        $ob = [HKDF2]::new()
-        $ob.Algorithm = $algorithm
-        $ob.Algorithm.Key = $secretKey
-        $ob.Salt = $salt
-        $ob.IterationCount = $iterations
-        $ob.BlockSize = $ob.Algorithm.HashSize / 8
-        $ob.BufferBytes = [byte[]]::new($ob.BlockSize)
-        return $ob
-    }
-    static [string] GetToken([string]$secretKey) {
-        return [HKDF2]::GetToken([xconvert]::ToSecurestring($secretKey))
-    }
-    static [string] GetToken([securestring]$secretKey) {
-        return [HKDF2]::GetToken($secretKey, [cryptobase]::GetDerivedSalt($secretKey))
-    }
-    static [string] GetToken([securestring]$secretKey, [int]$seconds) {
-        return [HKDF2]::GetToken($secretKey, [CryptoBase]::GetDerivedSalt($secretKey), $seconds)
-    }
-    static [string] GetToken([securestring]$secretKey, [byte[]]$salt) {
-        return [HKDF2]::GetToken($secretKey, $salt, [timespan]::new(365 * 68, 0, 0, 0))
-    }
-    static [string] GetToken([securestring]$secretKey, [timespan]$expires) {
-        return [HKDF2]::GetToken($secretKey, [CryptoBase]::GetDerivedSalt($secretKey), $expires.TotalSeconds)
-    }
-    static [string] GetToken([securestring]$secretKey, [datetime]$expires) {
-        return [HKDF2]::GenerateToken($secretKey, ($expires - [datetime]::Now).TotalSeconds)
-    }
-    static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [int]$seconds) {
-        $_mdhsbytes = [HKDF2]::new($secretKey, $salt).GetBytes(4)
-        $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_mdhsbytes)))
-        return [xconvert]::ToBase32String([shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_mdhsbytes, $_secretKey)).Replace("_", '')
-    }
-    static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [timespan]$expires) {
-        if ($expires.TotalSeconds -gt [int]::MaxValue) {
-            Throw [InvalidArgumentException]::new('Expires', "Token max timespan is $([Math]::Floor([timespan]::new(0, 0, 0, [int]::MaxValue).TotalDays/365)) years.")
-        }
-        return [HKDF2]::GetToken($secretKey, $salt, $expires.TotalSeconds)
-    }
-    static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey) {
-        return [HKDF2]::VerifyToken($TokenSTR, $secretKey, [CryptoBase]::GetDerivedSalt($secretKey))
-    }
-    static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey, [byte[]]$salt) {
-        $_calcdhash = [HKDF2]::new($secretKey, $salt).GetBytes(4)
-        $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_calcdhash)))
-        ($fb, $mdh) = [shuffl3r]::Split([xconvert]::FromBase32String(($TokenSTR.Trim() + '_' * 4)), $_secretKey, 4)
-        $ht = [DateTime]::FromFileTime([long]::Parse([System.Text.Encoding]::UTF8.GetString($fb)))
-        $rs = ($ht - [Datetime]::Now).TotalSeconds
-        $NotExpired = $rs -ge 0
-        Write-Verbose $("[HKDF2] The token {0} on: {1}" -f $(if ($NotExpired) { "will expire" } else { "expired" }), [datetime]::Now.AddSeconds($rs))
-        return $NotExpired -and [HKDF2]::TestEqualByteArrays($_calcdhash, $mdh)
-    }
-    static [securestring] Resolve([securestring]$Password, [string]$TokenSTR) {
-        return [HKDF2]::Resolve($Password, $TokenSTR, [CryptoBase]::GetDerivedSalt($Password))
-    }
-    static [securestring] Resolve([securestring]$Password, [string]$TokenSTR, [byte[]]$salt) {
-        $derivedKey = [securestring]::new(); [System.IntPtr]$handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
-        Add-Type -AssemblyName System.Runtime.InteropServices
-        Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToString($Password));
-        Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
-        [ValidateNotNullOrEmpty()][string] $TokenSTR = $TokenSTR
-        [ValidateNotNullOrEmpty()][string] $Passw0rd = $Passw0rd
-        if ([HKDF2]::VerifyToken($TokenSTR, $Password, $salt)) {
-            try {
-                if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With Hash: $TokenSTR") }
-                $derivedKey = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($Passw0rd, $salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)));
-            } catch {
-                Write-Error ($error[1].exception.ErrorRecord)
-                throw $_
-            } finally {
-                Remove-Variable -Name Passw0rd -Force -ErrorAction Ignore
-                # Zero out the memory used by the variable(just to be safe).
-                [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
-            }
-            return $derivedKey
-        } else {
-            Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
-        }
-    }
-    static [bool] TestEqualByteArrays([byte[]]$a, [byte[]]$b) {
-        # Compares two byte arrays for equality, specifically written so that the loop is not optimized.
-        if ($a -eq $b) {
-            return $true
-        }
-        if ($null -eq $a -or $null -eq $b -or $a.Length -ne $b.Length) {
-            return $false
-        }
-        $areSame = $true
-        for ($i = 0; $i -lt $a.Length; $i++) {
-            $areSame = $areSame -band ($a[$i] -eq $b[$i])
-        }
-        return $areSame
-    }
-}
-#endregion PasswordManager
 
 #region    FipsHMACSHA256
 # .SYNOPSIS
@@ -5506,7 +4787,7 @@ Class FileCryptr {
         $base64encString = [convert]::ToBase64String($EncrBytes)
         $base64encbArray = $base64encString.ToCharArray(); [array]::Reverse($base64encbArray);
         $base64encrevstr = -join $base64encbArray
-        [string]$xorPassword = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([ArgonCage]::GeneratePassword(30, $true, $false, $true, $true)))
+        [string]$xorPassword = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GeneratePassword(30, $true, $false, $true, $true)))
         [byte[]]$Passwdbytes = [System.Text.Encoding]::UTF8.GetBytes($xorPassword); $xkey64 = [convert]::ToBase64String($Passwdbytes)
         $base64XOREncPayload = [Convert]::ToBase64String([xor]::Encrypt([System.Text.Encoding]::UTF8.GetBytes($base64encrevstr), $Passwdbytes, 1))
         Write-Verbose "[+] Finalizing Code Layer ..."
@@ -5717,14 +4998,14 @@ class k3y {
         }
         return $IsValid
     }
-    [securestring] hidden ResolvePassword([securestring]$Password) {
-        if (!$this.IsHashed()) {
-            $hashSTR = [string]::Empty; Set-Variable -Name hashSTR -Scope local -Visibility Private -Option Private -Value $([string][xconvert]::ToHexString([HKDF2]::GetToken($password)));
-            & ([scriptblock]::Create("`$this.User.psobject.Properties.Add([psscriptproperty]::new('Password', { ConvertTo-SecureString -AsPlainText -String '$hashSTR' -Force }))"));
-        }
-        $SecHash = $this.User.Password;
-        return [ArgonCage]::Resolve($Password, $SecHash)
-    }
+    # [securestring] hidden ResolvePassword([securestring]$Password) {
+    #     if (!$this.IsHashed()) {
+    #         $hashSTR = [string]::Empty; Set-Variable -Name hashSTR -Scope local -Visibility Private -Option Private -Value $([string][xconvert]::ToHexString([HKDF2]::GetToken($password)));
+    #         & ([scriptblock]::Create("`$this.User.psobject.Properties.Add([psscriptproperty]::new('Password', { ConvertTo-SecureString -AsPlainText -String '$hashSTR' -Force }))"));
+    #     }
+    #     $SecHash = $this.User.Password;
+    #     return [ArgonCage]::Resolve($Password, $SecHash)
+    # }
     [bool]IsHashed() {
         return $this.IsHashed($false);
     }
@@ -6653,7 +5934,7 @@ $prompt
     }
     static [string] NewPassword() {
         #Todo: there should be like a small chat here to help the user generate the password
-        return [ArgonCage]::GeneratePassword()
+        return [CryptoBase]::GeneratePassword()
     }
     static [string] Get_dataPath() {
         return [CipherTron]::Get_dataPath('CipherTron', ([ChatLog]::new().Recvr + '_Chat').Trim()).FullName
@@ -8589,7 +7870,7 @@ function New-Password {
     }
 
     process {
-        $Pass = [ArgonCage]::GeneratePassword($Length, $StartWithLetter, $NoSymbols, $UseAmbiguousCharacters, $UseExtendedAscii);
+        $Pass = [CryptoBase]::GeneratePassword($Length, $StartWithLetter, $NoSymbols, $UseAmbiguousCharacters, $UseExtendedAscii);
         if ($PSCmdlet.ParameterSetName -eq 'asSecureString') {
             $pass = [xconvert]::ToSecurestring($Pass)
         }
