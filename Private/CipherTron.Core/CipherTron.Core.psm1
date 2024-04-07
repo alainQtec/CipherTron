@@ -2267,7 +2267,7 @@ class FileMonitor {
         }
     )
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File) {
-        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -ForegroundColor Green; Write-Host "    View log by running: [FileMonitor]::GetLogSummary()" -ForegroundColor Gray })
+        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -ForegroundColor Green })
     }
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File, [scriptblock]$Action) {
         [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo][CryptoBase]::GetUnResolvedPath($File)
@@ -2330,12 +2330,23 @@ class FileMonitor {
     }
     static [string] GetLogSummary([string]$LogvariableName) {
         [ValidateNotNullOrWhiteSpace()][string]$LogvariableName = $LogvariableName
-        $rgx = "\[.*\] The file '.*' is open in nvim \(PID: \d+\)"
         $l = Get-Variable -Name $LogvariableName -Scope Global -ValueOnly;
-        $s = ''; if ($null -eq $l) { return $s.Trim() }
-        0 .. $l.Count | ForEach-Object { if ($_ -eq 0) { $s += "$($l[0])`n" } elseif ($l[$_] -match $rgx -or $l[$_ + 1] -match $rgx) { $s += '.' } else { $s += "`n$($l[$_ - 1])" } }
-        $s = [string]::Join("`n", $s.Split("`n").ForEach({ if ($_ -like "......*") { '⋮' } else { $_ } })).Trim()
-        return $s
+        $summ = ''; $rgx = "\[.*\] The file '.*' is open in nvim \(PID: \d+\)"
+        if ($null -eq $l) { return '' }; $ct = $l.Where({ $_ -notmatch $rgx })
+        $LogSessions = @();
+        $LogSessions += $(if ($ct.count -gt 1) {
+                (($l.ForEach({ if ($_ -notmatch $rgx) { $_ + '|' } else { $_ } })) -join "`n").Split('|')
+            } else {
+                [string]::Join("`n", $l)
+            }
+        )
+        foreach ($item in $LogSessions) {
+            $s = ''; $lines = $item.Split("`n")
+            0 .. $lines.Count | ForEach-Object { if ($_ -eq 0) { $s += "$($lines[0])`n" } elseif ($lines[$_] -match $rgx -or $lines[$_ + 1] -match $rgx) { $s += '.' } else { $s += "`n$($lines[$_ - 1])" } }
+            $summ += [string]::Join("`n", $s.Split("`n").ForEach({ if ($_ -like "......*") { '⋮' } else { $_ } })).Trim()
+            $summ += "`n"
+        }
+        return $summ.Trim()
     }
     static [bool] IsFileOpenInVim([IO.FileInfo]$file) {
         $res = $null; $logvar = Get-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global;
