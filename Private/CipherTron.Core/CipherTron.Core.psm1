@@ -2267,7 +2267,7 @@ class FileMonitor {
         }
     )
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File) {
-        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -ForegroundColor Green })
+        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -ForegroundColor Green; Write-Host "    View log by running: [FileMonitor]::GetLogSummary()" -ForegroundColor Gray })
     }
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File, [scriptblock]$Action) {
         [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo][CryptoBase]::GetUnResolvedPath($File)
@@ -2324,6 +2324,18 @@ class FileMonitor {
             Name   = $fLT_Name
             Thread = Start-ThreadJob -ScriptBlock $threadscript -Name $fLT_Name
         }
+    }
+    static [string] GetLogSummary() {
+        return [FileMonitor]::GetLogSummary([FileMonitor]::LogvariableName)
+    }
+    static [string] GetLogSummary([string]$LogvariableName) {
+        [ValidateNotNullOrWhiteSpace()][string]$LogvariableName = $LogvariableName
+        $rgx = "\[.*\] The file '.*' is open in nvim \(PID: \d+\)"
+        $l = Get-Variable -Name $LogvariableName -Scope Global -ValueOnly;
+        $s = ''; if ($null -eq $l) { return $s.Trim() }
+        0 .. $l.Count | ForEach-Object { if ($_ -eq 0) { $s += "$($l[0])`n" } elseif ($l[$_] -match $rgx -or $l[$_ + 1] -match $rgx) { $s += '.' } else { $s += "`n$($l[$_ - 1])" } }
+        $s = [string]::Join("`n", $s.Split("`n").ForEach({ if ($_ -like "......*") { '⋮' } else { $_ } })).Trim()
+        return $s
     }
     static [bool] IsFileOpenInVim([IO.FileInfo]$file) {
         $res = $null; $logvar = Get-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global;
