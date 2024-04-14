@@ -650,23 +650,24 @@ class CryptoBase {
     static [string] GetUnResolvedPath([System.Management.Automation.SessionState]$session, [string]$Path) {
         return $session.Path.GetUnresolvedProviderPathFromPSPath($Path)
     }
-    static [void] GetEnumerator([string]$Name, [bool]$IsPublic, [string[]]$Members) {
+    static [System.Type] CreateEnum([string]$Name, [bool]$IsPublic, [string[]]$Members) {
+        # Example:
+        # $MacMseries = [cryptobase]::CreateEnum('Mseries', $true, ('M1', 'M2', 'M3'))
+        # $MacMseries::M1 | gm
+        # Todo: Explore more about [System.Reflection.Emit.EnumBuilder], so we can add more features. ex: Flags, instead of [string[]]$Members we can have [hastable]$Members etc.
         try {
-            if ([string]::IsNullOrWhiteSpace($Name)) {
-                throw [InvalidArgumentException]::new('Name', 'Name can not be null or space')
-            }
-            $Domain = [AppDomain]::CurrentDomain
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw [InvalidArgumentException]::new('Name', 'Name can not be null or space') }
             $DynAssembly = [System.Reflection.AssemblyName]::new("EmittedEnum")
-            $AssemblyBuilder = $Domain.DefineDynamicAssembly($DynAssembly, ([System.Reflection.Emit.AssemblyBuilderAccess]::Save -bor [System.Reflection.Emit.AssemblyBuilderAccess]::Run)) # Only run in memory
-            $ModuleBuilder = $AssemblyBuilder.DefineDynamicModule("DynamicModule", $False)
-            $EnumBuilder = $ModuleBuilder.DefineEnum('GetLastErrorEnum', 'Public', [int32])
+            $AssmBuilder = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, ([System.Reflection.Emit.AssemblyBuilderAccess]::Save -bor [System.Reflection.Emit.AssemblyBuilderAccess]::Run)) # Only run in memory
+            $ModulBuildr = $AssmBuilder.DefineDynamicModule("DynamicModule")
             $type_attrib = if ($IsPublic) { [System.Reflection.TypeAttributes]::Public }else { [System.Reflection.TypeAttributes]::NotPublic }
-            $enumBuilder = $moduleBuilder.DefineEnum($name, $type_attrib, [System.Int32]);
+            $enumBuilder = [System.Reflection.Emit.EnumBuilder]$ModulBuildr.DefineEnum($name, $type_attrib, [System.Int32]);
             for ($i = 0; $i -lt $Members.count; $i++) { [void]$enumBuilder.DefineLiteral($Members[$i], $i) }
             [void]$enumBuilder.CreateType()
         } catch {
             throw $_
         }
+        return ($Name -as [Type])
     }
     static [System.Security.Cryptography.Aes] GetAes() { return [CryptoBase]::GetAes(1) }
     static [System.Security.Cryptography.Aes] GetAes([int]$Iterations) {
