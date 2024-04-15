@@ -481,67 +481,49 @@ class CryptoBase {
         }
         return [string][CryptoBase]::GetRandomSTR($samplekeys, $iterations, $minLength, $maxLength);
     }
-    static [byte[]] GetSalt() {
-        # [system.Text.Encoding]::UTF8.GetBytes()
-        return [byte[]][xconvert]::BytesFromObject([CryptoBase]::GetRandomName(16));
+    static [byte[]] GetDerivedBytes() {
+        return [CryptoBase]::GetDerivedBytes(16)
     }
-    static [byte[]] GetSalt([int]$iterations) {
-        return [byte[]]$(1..$iterations | ForEach-Object { [CryptoBase]::GetSalt() });
+    static [byte[]] GetDerivedBytes([int]$Length) {
+        return [CryptoBase]::GetDerivedBytes([xconvert]::ToSecurestring([CryptoBase]::GetRandomName(16)), $Length)
     }
-    static [byte[]] GetRfc2898Bytes([securestring]$password) {
-        return [CryptoBase]::GetRfc2898Bytes($password, 16)
+    static [byte[]] GetDerivedBytes([securestring]$password) {
+        return [CryptoBase]::GetDerivedBytes($password, 16)
     }
-    static [byte[]] GetRfc2898Bytes([securestring]$password, [int]$Length) {
-        $rfc2898 = $null; $s4lt = $null;
-        Set-Variable -Name s4lt -Scope Local -Visibility Private -Option Private -Value $(switch ([CryptoBase]::EncryptionScope.ToString()) {
-                "Machine" {
-                    [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())
+    static [byte[]] GetDerivedBytes([securestring]$password, [int]$Length) {
+        $pswd = [xconvert]::ToSecurestring($(switch ([CryptoBase]::EncryptionScope.ToString()) {
+                    "Machine" {
+                        [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())
+                    }
+                    Default {
+                        [convert]::FromBase64String("hsKgmva9wZoDxLeREB1udw==")
+                    }
                 }
-                Default {
-                    [convert]::FromBase64String("hsKgmva9wZoDxLeREB1udw==")
-                }
-            }
+            )
         )
-        Set-Variable -Name rfc2898 -Scope Local -Visibility Private -Option Private -Value $([System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $s6lt));
-        $aesManaged = New-Object System.Security.Cryptography.AesManaged
-
-        $aesManaged.Key = $rfc2898.GetBytes(32)
-        $aesManaged.IV = $s6lt
-
-        $encryptor = $aesManaged.CreateEncryptor()
-        $memoryStream = [System.IO.MemoryStream]::new()
-        $cryptoStream = [System.Security.Cryptography.CryptoStream]::new($memoryStream, $encryptor, 'Write')
-        $cryptoStream.Write($s6lt, 0, $s6lt.Length)
-        $cryptoStream.FlushFinalBlock(); $s6lt = $memoryStream.ToArray()
-        Set-Variable -Name rfc2898 -Scope Local -Visibility Private -Option Private -Value $([System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $s6lt));
-        $cryptoStream.Close()
-        $memoryStream.Close()
-
-        Set-Variable -Name s4lt -Scope Local -Visibility Private -Option Private -Value $($rfc2898.GetBytes($Length));
-        return $s4lt
+        $s6lt = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, [System.Text.Encoding]::UTF8.GetBytes([xconvert]::ToString($password))).GetBytes(16)
+        return [CryptoBase]::GetDerivedBytes($pswd, $s6lt, $Length)
+    }
+    static [byte[]] GetDerivedBytes([securestring]$password, [byte[]]$salt, [int]$Length) {
+        return [System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $salt, 1000).GetBytes($Length);
     }
     static [byte[]] GetKey() {
         return [CryptoBase]::GetKey(16);
     }
     static [byte[]] GetKey([int]$Length) {
-        $password = $null; Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()));
-        return [CryptoBase]::GetKey($password, $Length)
+        return [CryptoBase]::GetKey([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()), $Length)
     }
     static [byte[]] GetKey([securestring]$password) {
         return [CryptoBase]::GetKey($password, 16)
     }
     static [byte[]] GetKey([securestring]$password, [int]$Length) {
-        return [CryptoBase]::GetKey($password, [CryptoBase]::GetRfc2898Bytes($password), $Length)
+        return [CryptoBase]::GetDerivedBytes($password, $Length)
     }
     static [byte[]] GetKey([securestring]$password, [byte[]]$salt) {
         return [CryptoBase]::GetKey($password, $salt, 16)
     }
     static [byte[]] GetKey([securestring]$password, [byte[]]$salt, [int]$Length) {
-        $Rfc2898Obj = $null; $derivedkey = $null;
-        Write-Verbose "Generating Key: $Length" -Verbose
-        Set-Variable -Name Rfc2898Obj -Scope Local -Visibility Private -Option Private -Value $([System.Security.Cryptography.Rfc2898DeriveBytes]::new($([System.Text.Encoding]::UTF8.GetBytes([xconvert]::ToString($password))), $Salt, 1000));
-        Set-Variable -Name derivedkey -Scope Local -Visibility Private -Option Private -Value $($Rfc2898Obj.GetBytes($Length));
-        return $derivedkey
+        return [CryptoBase]::GetDerivedBytes($password, $salt, $Length)
     }
     # can be used to generate random IV
     static [byte[]] GetRandomEntropy() {
@@ -692,7 +674,7 @@ class CryptoBase {
     static [System.Security.Cryptography.Aes] GetAes([int]$Iterations) {
         $salt = $null; $password = $null;
         Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()));
-        Set-Variable -Name salt -Scope Local -Visibility Private -Option Private -Value $([CryptoBase]::GetSalt($Iterations));
+        Set-Variable -Name salt -Scope Local -Visibility Private -Option Private -Value $([CryptoBase]::GetDerivedBytes(16));
         return [CryptoBase]::GetAes($password, $salt, $Iterations)
     }
     static [System.Security.Cryptography.Aes] GetAes([securestring]$password, [byte[]]$salt, [int]$iterations) {
@@ -1404,11 +1386,11 @@ class xconvert : System.ComponentModel.TypeConverter {
     }
     static [byte[]] ToProtected([byte[]]$Bytes) {
         $p = [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
-        return [AesGCM]::Encrypt($Bytes, $p, [CryptoBase]::GetRfc2898Bytes($p))
+        return [AesGCM]::Encrypt($Bytes, $p, [CryptoBase]::GetDerivedBytes($p))
     }
     static [byte[]] ToUnProtected([byte[]]$Bytes) {
         $p = [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
-        return [AesGCM]::Decrypt($Bytes, $p, [CryptoBase]::GetRfc2898Bytes($p))
+        return [AesGCM]::Decrypt($Bytes, $p, [CryptoBase]::GetDerivedBytes($p))
     }
     static [byte[]] ToCompressed([byte[]]$Bytes) {
         return [xconvert]::ToCompressed($Bytes, 'Gzip');
@@ -3455,7 +3437,7 @@ class AesGCM : CryptoBase {
         return [AesGCM]::Encrypt($bytes, [AesGCM]::GetPassword());
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password) {
-        [byte[]]$_salt = [AesGCM]::GetRfc2898Bytes($Password)
+        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
         return [AesGCM]::Encrypt($bytes, $Password, $_salt);
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt) {
@@ -3465,14 +3447,14 @@ class AesGCM : CryptoBase {
         return [convert]::ToBase64String([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes("$text"), $Password, $iterations));
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [int]$iterations) {
-        [byte[]]$_salt = [AesGCM]::GetRfc2898Bytes($Password)
+        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
         return [AesGCM]::Encrypt($bytes, $Password, $_salt, $null, $null, $iterations);
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [int]$iterations) {
         return [AesGCM]::Encrypt($bytes, $Password, $Salt, $null, $null, $iterations);
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [int]$iterations, [string]$Compression) {
-        [byte[]]$_salt = [AesGCM]::GetRfc2898Bytes($Password)
+        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
         return [AesGCM]::Encrypt($bytes, $Password, $_salt, $null, $Compression, $iterations);
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [int]$iterations) {
@@ -3534,7 +3516,7 @@ class AesGCM : CryptoBase {
         Write-Verbose "$([AesGCM]::caller) Begin file encryption:"
         Write-Verbose "[-]  File    : $File"
         Write-Verbose "[-]  OutFile : $OutPath"
-        [byte[]]$_salt = [AesGCM]::GetRfc2898Bytes($Password);
+        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password);
         $encryptdbytes = [AesGCM]::Encrypt($ba, $Password, $_salt, $null, $Compression, $iterations)
         $streamWriter = [System.IO.FileStream]::new($OutPath, [System.IO.FileMode]::OpenOrCreate);
         [void]$streamWriter.Write($encryptdbytes, 0, $encryptdbytes.Length);
@@ -3546,7 +3528,7 @@ class AesGCM : CryptoBase {
         return [AesGCM]::Decrypt($bytes, [AesGCM]::GetPassword());
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password) {
-        [byte[]]$_salt = [AesGCM]::GetRfc2898Bytes($Password)
+        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
         return [AesGCM]::Decrypt($bytes, $Password, $_salt);
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt) {
@@ -3556,14 +3538,14 @@ class AesGCM : CryptoBase {
         return [System.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([convert]::FromBase64String($text), $Password, $iterations));
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [int]$iterations) {
-        [byte[]]$_salt = [AesGCM]::GetRfc2898Bytes($Password)
+        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
         return [AesGCM]::Decrypt($bytes, $Password, $_salt, $null, $null, $iterations);
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [int]$iterations) {
         return [AesGCM]::Decrypt($bytes, $Password, $Salt, $null, $null, 1);
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [int]$iterations, [string]$Compression) {
-        [byte[]]$_salt = [AesGCM]::GetRfc2898Bytes($Password)
+        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
         return [AesGCM]::Decrypt($bytes, $Password, $_salt, $null, $Compression, $iterations);
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [int]$iterations) {
@@ -3625,7 +3607,7 @@ class AesGCM : CryptoBase {
         Write-Verbose "$([AesGCM]::caller) Begin file decryption:"
         Write-Verbose "[-]  File    : $File"
         Write-Verbose "[-]  OutFile : $OutPath"
-        [byte[]]$_salt = [AesGCM]::GetRfc2898Bytes($Password);
+        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password);
         $decryptdbytes = [AesGCM]::Decrypt($ba, $Password, $_salt, $null, $Compression, $iterations)
         $streamWriter = [System.IO.FileStream]::new($OutPath, [System.IO.FileMode]::OpenOrCreate);
         [void]$streamWriter.Write($decryptdbytes, 0, $decryptdbytes.Length);
@@ -6870,7 +6852,7 @@ class ChatSession : System.Runtime.Serialization.ISerializable {
         $n = $this.User.Name
         return [guid][xconvert]::ToGuid(
             [System.Convert]::ToBase64String(
-                [CryptoBase]::GetRfc2898Bytes(
+                [CryptoBase]::GetDerivedBytes(
                     [xconvert]::ToSecurestring(
                         $(if ($n.Length -gt 5) { $n.Substring(0, 5) } else { $n }) + ':' + (
                             [int]([Datetime]::Now.ToUniversalTime() - (Get-Date -Date '1970-01-01T00:00:00Z')).TotalSeconds
