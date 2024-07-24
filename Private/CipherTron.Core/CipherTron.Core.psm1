@@ -5372,6 +5372,9 @@ class Decryptor {
 #   $bot.Chat()
 #
 #   $bot.ChatLog.ToString()
+# .NOTES
+#  Todo: Each user will use his own Azure OpenAI key
+#    ie: https://4sysops.com/archives/use-powershell-to-deploy-and-access-gpt-4o-via-azure-openai-service/
 class CipherTron : CryptoBase {
     [ValidateNotNullOrEmpty()][RecordTbl] $Config
     [ValidateNotNullOrEmpty()][version] $Version
